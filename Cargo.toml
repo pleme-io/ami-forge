@@ -1,0 +1,50 @@
+[package]
+name = "ami-forge"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89.0"
+description = "Rust CLI tool replacing shell scripts in the AMI build pipeline"
+license = "MIT"
+authors = ["Pleme Team <team@pleme.io>"]
+repository = "https://github.com/pleme-io/ami-forge"
+homepage = "https://github.com/pleme-io/ami-forge"
+keywords = ["ami", "aws", "ec2", "nix", "devops"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["target/", "result-*", "Cargo.nix", "flake.*"]
+
+[[bin]]
+name = "ami-forge"
+path = "src/main.rs"
+
+[dependencies]
+# AWS SDK
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-ec2 = "1"
+aws-sdk-s3 = "1"
+aws-sdk-ssm = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Progress
+indicatif = "0.17"
+
+# Byte-size formatting
+bytesize = "2"
+
+[lints.clippy]
+pedantic = "warn"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
