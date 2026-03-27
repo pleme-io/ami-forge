@@ -23,6 +23,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aws-config",
+ "aws-sdk-codebuild",
  "aws-sdk-ec2",
  "aws-sdk-s3",
  "aws-sdk-ssm",
@@ -191,6 +192,30 @@ dependencies = [
  "pin-project-lite",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aws-sdk-codebuild"
+version = "1.117.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99ad35f3e6e29f411debfe4a7f1186a2bb82cf9319dacac0d05b626b2fc6e803"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
 ]
 
 [[package]]
