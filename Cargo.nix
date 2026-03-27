@@ -157,23 +157,32 @@ rec {
           {
             name = "aws-config";
             packageId = "aws-config";
-            features = [ "behavior-version-latest" ];
+            usesDefaultFeatures = false;
+            features = [ "behavior-version-latest" "rustls" "rt-tokio" "credentials-process" "sso" ];
           }
           {
             name = "aws-sdk-codebuild";
             packageId = "aws-sdk-codebuild";
+            usesDefaultFeatures = false;
+            features = [ "rustls" "rt-tokio" ];
           }
           {
             name = "aws-sdk-ec2";
             packageId = "aws-sdk-ec2";
+            usesDefaultFeatures = false;
+            features = [ "rustls" "rt-tokio" ];
           }
           {
             name = "aws-sdk-s3";
             packageId = "aws-sdk-s3";
+            usesDefaultFeatures = false;
+            features = [ "rustls" "rt-tokio" ];
           }
           {
             name = "aws-sdk-ssm";
             packageId = "aws-sdk-ssm";
+            usesDefaultFeatures = false;
+            features = [ "rustls" "rt-tokio" ];
           }
           {
             name = "bytesize";
@@ -504,7 +513,7 @@ rec {
           "sso" = [ "dep:aws-sdk-sso" "dep:aws-sdk-ssooidc" "dep:ring" "dep:hex" "dep:zeroize" "aws-smithy-runtime-api/http-auth" ];
           "test-util" = [ "aws-runtime/test-util" ];
         };
-        resolvedDefaultFeatures = [ "behavior-version-latest" "credentials-process" "default" "default-https-client" "rt-tokio" "sso" ];
+        resolvedDefaultFeatures = [ "behavior-version-latest" "client-hyper" "credentials-process" "rt-tokio" "rustls" "sso" ];
       };
       "aws-credential-types" = rec {
         crateName = "aws-credential-types";
@@ -745,7 +754,7 @@ rec {
           "sigv4a" = [ "aws-sigv4/sigv4a" ];
           "test-util" = [ "dep:regex-lite" ];
         };
-        resolvedDefaultFeatures = [ "event-stream" "http-02x" "http-1x" "sigv4a" ];
+        resolvedDefaultFeatures = [ "event-stream" "http-02x" "http-1x" ];
       };
       "aws-sdk-codebuild" = rec {
         crateName = "aws-sdk-codebuild";
@@ -841,7 +850,7 @@ rec {
           "rustls" = [ "aws-smithy-runtime/tls-rustls" ];
           "test-util" = [ "aws-credential-types/test-util" "aws-smithy-runtime/test-util" ];
         };
-        resolvedDefaultFeatures = [ "default" "default-https-client" "rt-tokio" "rustls" ];
+        resolvedDefaultFeatures = [ "rt-tokio" "rustls" ];
       };
       "aws-sdk-ec2" = rec {
         crateName = "aws-sdk-ec2";
@@ -966,7 +975,7 @@ rec {
           "rustls" = [ "aws-smithy-runtime/tls-rustls" ];
           "test-util" = [ "aws-credential-types/test-util" "aws-smithy-runtime/test-util" ];
         };
-        resolvedDefaultFeatures = [ "default" "default-https-client" "rt-tokio" "rustls" ];
+        resolvedDefaultFeatures = [ "rt-tokio" "rustls" ];
       };
       "aws-sdk-s3" = rec {
         crateName = "aws-sdk-s3";
@@ -1141,7 +1150,7 @@ rec {
           "sigv4a" = [ "aws-runtime/sigv4a" ];
           "test-util" = [ "aws-credential-types/test-util" "aws-smithy-runtime/test-util" ];
         };
-        resolvedDefaultFeatures = [ "default" "default-https-client" "http-1x" "rt-tokio" "rustls" "sigv4a" ];
+        resolvedDefaultFeatures = [ "rt-tokio" "rustls" ];
       };
       "aws-sdk-ssm" = rec {
         crateName = "aws-sdk-ssm";
@@ -1237,7 +1246,7 @@ rec {
           "rustls" = [ "aws-smithy-runtime/tls-rustls" ];
           "test-util" = [ "aws-credential-types/test-util" "aws-smithy-runtime/test-util" ];
         };
-        resolvedDefaultFeatures = [ "default" "default-https-client" "rt-tokio" "rustls" ];
+        resolvedDefaultFeatures = [ "rt-tokio" "rustls" ];
       };
       "aws-sdk-sso" = rec {
         crateName = "aws-sdk-sso";
@@ -1591,11 +1600,6 @@ rec {
             packageId = "bytes";
           }
           {
-            name = "crypto-bigint";
-            packageId = "crypto-bigint 0.5.5";
-            optional = true;
-          }
-          {
             name = "form_urlencoded";
             packageId = "form_urlencoded";
             optional = true;
@@ -1620,29 +1624,13 @@ rec {
             optional = true;
           }
           {
-            name = "p256";
-            packageId = "p256";
-            optional = true;
-            features = [ "ecdsa" ];
-          }
-          {
             name = "percent-encoding";
             packageId = "percent-encoding";
             optional = true;
           }
           {
-            name = "ring";
-            packageId = "ring";
-            optional = true;
-          }
-          {
             name = "sha2";
             packageId = "sha2";
-          }
-          {
-            name = "subtle";
-            packageId = "subtle";
-            optional = true;
           }
           {
             name = "time";
@@ -1651,11 +1639,6 @@ rec {
           {
             name = "tracing";
             packageId = "tracing";
-          }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
-            optional = true;
           }
         ];
         devDependencies = [
@@ -1674,11 +1657,6 @@ rec {
             packageId = "bytes";
           }
           {
-            name = "ring";
-            packageId = "ring";
-            target = { target, features }: (!(("powerpc" == target."arch" or null) || ("powerpc64" == target."arch" or null)));
-          }
-          {
             name = "time";
             packageId = "time";
             features = [ "parsing" ];
@@ -1692,7 +1670,7 @@ rec {
           "sign-http" = [ "dep:http0" "dep:percent-encoding" "dep:form_urlencoded" ];
           "sigv4a" = [ "dep:p256" "dep:crypto-bigint" "dep:subtle" "dep:zeroize" "dep:ring" ];
         };
-        resolvedDefaultFeatures = [ "default" "http0-compat" "http1" "sign-eventstream" "sign-http" "sigv4a" ];
+        resolvedDefaultFeatures = [ "default" "http0-compat" "http1" "sign-eventstream" "sign-http" ];
       };
       "aws-smithy-async" = rec {
         crateName = "aws-smithy-async";
@@ -2538,19 +2516,6 @@ rec {
           "examples" = [ "dep:hyper-rustls" "aws-smithy-runtime/client" "aws-smithy-runtime/connector-hyper-0-14-x" "aws-smithy-runtime/tls-rustls" ];
         };
       };
-      "base16ct" = rec {
-        crateName = "base16ct";
-        version = "0.1.1";
-        edition = "2021";
-        sha256 = "1klccxr7igf73wpi0x3asjd8n0xjg0v6a7vxgvfk5ybvgh1hd6il";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        features = {
-          "std" = [ "alloc" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" ];
-      };
       "base64" = rec {
         crateName = "base64";
         version = "0.22.1";
@@ -2589,19 +2554,6 @@ rec {
           "unstable" = [ "vsimd/unstable" ];
         };
         resolvedDefaultFeatures = [ "alloc" "default" "detect" "std" ];
-      };
-      "base64ct" = rec {
-        crateName = "base64ct";
-        version = "1.8.3";
-        edition = "2024";
-        sha256 = "01nyyyx84bhwrcc168hn47d8gvz2pzpv3y3lmck7mq4hw5vh3x9a";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        features = {
-          "std" = [ "alloc" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" ];
       };
       "bitflags" = rec {
         crateName = "bitflags";
@@ -2945,19 +2897,6 @@ rec {
         };
         resolvedDefaultFeatures = [ "ansi-parsing" "unicode-width" ];
       };
-      "const-oid" = rec {
-        crateName = "const-oid";
-        version = "0.9.6";
-        edition = "2021";
-        sha256 = "1y0jnqaq7p2wvspnx7qj76m7hjcqpz73qzvr9l2p9n2s51vr6if2";
-        libName = "const_oid";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        features = {
-          "arbitrary" = [ "dep:arbitrary" ];
-        };
-      };
       "core-foundation" = rec {
         crateName = "core-foundation";
         version = "0.10.1";
@@ -3153,99 +3092,6 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "std" ];
       };
-      "crypto-bigint 0.4.9" = rec {
-        crateName = "crypto-bigint";
-        version = "0.4.9";
-        edition = "2021";
-        sha256 = "1vqprgj0aj1340w186zyspi58397ih78jsc0iydvhs6zrlilnazg";
-        libName = "crypto_bigint";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "generic-array";
-            packageId = "generic-array";
-            optional = true;
-          }
-          {
-            name = "rand_core";
-            packageId = "rand_core";
-            optional = true;
-          }
-          {
-            name = "subtle";
-            packageId = "subtle";
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-        ];
-        devDependencies = [
-          {
-            name = "rand_core";
-            packageId = "rand_core";
-            features = [ "std" ];
-          }
-        ];
-        features = {
-          "default" = [ "rand" ];
-          "der" = [ "dep:der" ];
-          "generic-array" = [ "dep:generic-array" ];
-          "rand" = [ "rand_core/std" ];
-          "rand_core" = [ "dep:rand_core" ];
-          "rlp" = [ "dep:rlp" ];
-          "serde" = [ "serdect" ];
-          "serdect" = [ "dep:serdect" ];
-          "zeroize" = [ "dep:zeroize" ];
-        };
-        resolvedDefaultFeatures = [ "generic-array" "rand_core" "zeroize" ];
-      };
-      "crypto-bigint 0.5.5" = rec {
-        crateName = "crypto-bigint";
-        version = "0.5.5";
-        edition = "2021";
-        sha256 = "0xmbdff3g6ii5sbxjxc31xfkv9lrmyril4arh3dzckd4gjsjzj8d";
-        libName = "crypto_bigint";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "rand_core";
-            packageId = "rand_core";
-            optional = true;
-          }
-          {
-            name = "subtle";
-            packageId = "subtle";
-            usesDefaultFeatures = false;
-          }
-        ];
-        devDependencies = [
-          {
-            name = "rand_core";
-            packageId = "rand_core";
-            features = [ "std" ];
-          }
-        ];
-        features = {
-          "alloc" = [ "serdect?/alloc" ];
-          "default" = [ "rand" ];
-          "der" = [ "dep:der" ];
-          "generic-array" = [ "dep:generic-array" ];
-          "rand" = [ "rand_core/std" ];
-          "rand_core" = [ "dep:rand_core" ];
-          "rlp" = [ "dep:rlp" ];
-          "serde" = [ "dep:serdect" ];
-          "zeroize" = [ "dep:zeroize" ];
-        };
-        resolvedDefaultFeatures = [ "default" "rand" "rand_core" ];
-      };
       "crypto-common" = rec {
         crateName = "crypto-common";
         version = "0.1.7";
@@ -3271,42 +3117,6 @@ rec {
           "rand_core" = [ "dep:rand_core" ];
         };
         resolvedDefaultFeatures = [ "std" ];
-      };
-      "der" = rec {
-        crateName = "der";
-        version = "0.6.1";
-        edition = "2021";
-        sha256 = "1pnl3y52m1s6srxpfrfbazf6qilzq8fgksk5dv79nxaybjk6g97i";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "const-oid";
-            packageId = "const-oid";
-            optional = true;
-          }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
-            optional = true;
-            usesDefaultFeatures = false;
-            features = [ "alloc" ];
-          }
-        ];
-        features = {
-          "const-oid" = [ "dep:const-oid" ];
-          "der_derive" = [ "dep:der_derive" ];
-          "derive" = [ "der_derive" ];
-          "flagset" = [ "dep:flagset" ];
-          "oid" = [ "const-oid" ];
-          "pem" = [ "alloc" "pem-rfc7468/alloc" "zeroize" ];
-          "pem-rfc7468" = [ "dep:pem-rfc7468" ];
-          "std" = [ "alloc" ];
-          "time" = [ "dep:time" ];
-          "zeroize" = [ "dep:zeroize" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" "const-oid" "oid" "zeroize" ];
       };
       "deranged" = rec {
         crateName = "deranged";
@@ -3414,63 +3224,6 @@ rec {
         ];
 
       };
-      "ecdsa" = rec {
-        crateName = "ecdsa";
-        version = "0.14.8";
-        edition = "2021";
-        sha256 = "0p1wxap2s6jm06y2w3cal8dkz6p9223ir9wws70rgx8h929h2cs1";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "der";
-            packageId = "der";
-            optional = true;
-          }
-          {
-            name = "elliptic-curve";
-            packageId = "elliptic-curve";
-            usesDefaultFeatures = false;
-            features = [ "digest" "sec1" ];
-          }
-          {
-            name = "rfc6979";
-            packageId = "rfc6979";
-            optional = true;
-          }
-          {
-            name = "signature";
-            packageId = "signature";
-            usesDefaultFeatures = false;
-            features = [ "hazmat-preview" "rand-preview" ];
-          }
-        ];
-        devDependencies = [
-          {
-            name = "elliptic-curve";
-            packageId = "elliptic-curve";
-            usesDefaultFeatures = false;
-            features = [ "dev" ];
-          }
-        ];
-        features = {
-          "arithmetic" = [ "elliptic-curve/arithmetic" ];
-          "default" = [ "digest" ];
-          "der" = [ "dep:der" ];
-          "dev" = [ "arithmetic" "digest" "elliptic-curve/dev" "hazmat" ];
-          "digest" = [ "signature/digest-preview" ];
-          "pem" = [ "elliptic-curve/pem" "pkcs8" ];
-          "pkcs8" = [ "elliptic-curve/pkcs8" "der" ];
-          "rfc6979" = [ "dep:rfc6979" ];
-          "serde" = [ "elliptic-curve/serde" "serdect" ];
-          "serdect" = [ "dep:serdect" ];
-          "sign" = [ "arithmetic" "digest" "hazmat" "rfc6979" ];
-          "std" = [ "alloc" "elliptic-curve/std" "signature/std" ];
-          "verify" = [ "arithmetic" "digest" "hazmat" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" "arithmetic" "der" "digest" "hazmat" "pkcs8" "rfc6979" "sign" "std" "verify" ];
-      };
       "either" = rec {
         crateName = "either";
         version = "1.15.0";
@@ -3484,109 +3237,6 @@ rec {
           "serde" = [ "dep:serde" ];
           "use_std" = [ "std" ];
         };
-      };
-      "elliptic-curve" = rec {
-        crateName = "elliptic-curve";
-        version = "0.12.3";
-        edition = "2021";
-        sha256 = "1lwi108mh6drw5nzqzlz7ighdba5qxdg5vmwwnw1j2ihnn58ifz7";
-        libName = "elliptic_curve";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "base16ct";
-            packageId = "base16ct";
-          }
-          {
-            name = "crypto-bigint";
-            packageId = "crypto-bigint 0.4.9";
-            usesDefaultFeatures = false;
-            features = [ "rand_core" "generic-array" "zeroize" ];
-          }
-          {
-            name = "der";
-            packageId = "der";
-            usesDefaultFeatures = false;
-            features = [ "oid" ];
-          }
-          {
-            name = "digest";
-            packageId = "digest";
-            optional = true;
-          }
-          {
-            name = "ff";
-            packageId = "ff";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "generic-array";
-            packageId = "generic-array";
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "group";
-            packageId = "group";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "pkcs8";
-            packageId = "pkcs8";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "rand_core";
-            packageId = "rand_core";
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "sec1";
-            packageId = "sec1";
-            optional = true;
-            features = [ "subtle" "zeroize" ];
-          }
-          {
-            name = "subtle";
-            packageId = "subtle";
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
-            usesDefaultFeatures = false;
-          }
-        ];
-        features = {
-          "alloc" = [ "base16ct/alloc" "der/alloc" "sec1/alloc" "zeroize/alloc" ];
-          "arithmetic" = [ "ff" "group" ];
-          "base64ct" = [ "dep:base64ct" ];
-          "bits" = [ "arithmetic" "ff/bits" ];
-          "default" = [ "arithmetic" ];
-          "dev" = [ "arithmetic" "hex-literal" "pem" "pkcs8" ];
-          "digest" = [ "dep:digest" ];
-          "ecdh" = [ "arithmetic" "digest" "hkdf" ];
-          "ff" = [ "dep:ff" ];
-          "group" = [ "dep:group" ];
-          "hash2curve" = [ "arithmetic" "digest" ];
-          "hex-literal" = [ "dep:hex-literal" ];
-          "hkdf" = [ "dep:hkdf" ];
-          "jwk" = [ "alloc" "base64ct/alloc" "serde" "serde_json" "zeroize/alloc" ];
-          "pem" = [ "alloc" "arithmetic" "der/pem" "pem-rfc7468/alloc" "pkcs8" "sec1/pem" ];
-          "pem-rfc7468" = [ "dep:pem-rfc7468" ];
-          "pkcs8" = [ "dep:pkcs8" ];
-          "sec1" = [ "dep:sec1" ];
-          "serde" = [ "alloc" "pkcs8" "sec1/serde" "serdect" ];
-          "serde_json" = [ "dep:serde_json" ];
-          "serdect" = [ "dep:serdect" ];
-          "std" = [ "alloc" "rand_core/std" ];
-          "voprf" = [ "digest" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" "arithmetic" "digest" "ff" "group" "hazmat" "pkcs8" "sec1" "std" ];
       };
       "encode_unicode" = rec {
         crateName = "encode_unicode";
@@ -3665,39 +3315,6 @@ rec {
           "std" = [ "alloc" ];
         };
         resolvedDefaultFeatures = [ "alloc" "default" "std" ];
-      };
-      "ff" = rec {
-        crateName = "ff";
-        version = "0.12.1";
-        edition = "2021";
-        sha256 = "0q3imz4m3dj2cy182i20wa8kbclgj13ddfngqb2miicc6cjzq4yh";
-        authors = [
-          "Sean Bowe <ewillbefull@gmail.com>"
-          "Jack Grigg <thestr4d@gmail.com>"
-        ];
-        dependencies = [
-          {
-            name = "rand_core";
-            packageId = "rand_core";
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "subtle";
-            packageId = "subtle";
-            usesDefaultFeatures = false;
-            features = [ "i128" ];
-          }
-        ];
-        features = {
-          "bits" = [ "bitvec" ];
-          "bitvec" = [ "dep:bitvec" ];
-          "byteorder" = [ "dep:byteorder" ];
-          "default" = [ "bits" "std" ];
-          "derive" = [ "byteorder" "ff_derive" ];
-          "derive_bits" = [ "bits" "ff_derive/bits" ];
-          "ff_derive" = [ "dep:ff_derive" ];
-          "std" = [ "alloc" ];
-        };
       };
       "find-msvc-tools" = rec {
         crateName = "find-msvc-tools";
@@ -3932,7 +3549,6 @@ rec {
           "rustc-dep-of-std" = [ "compiler_builtins" "core" "libc/rustc-dep-of-std" "wasi/rustc-dep-of-std" ];
           "wasm-bindgen" = [ "dep:wasm-bindgen" ];
         };
-        resolvedDefaultFeatures = [ "std" ];
       };
       "getrandom 0.3.4" = rec {
         crateName = "getrandom";
@@ -4012,41 +3628,6 @@ rec {
           "wasm_js" = [ "dep:wasm-bindgen" "dep:js-sys" ];
         };
         resolvedDefaultFeatures = [ "std" ];
-      };
-      "group" = rec {
-        crateName = "group";
-        version = "0.12.1";
-        edition = "2021";
-        sha256 = "1ixspxqdpq0hxg0hd9s6rngrp6rll21v4jjnr7ar1lzvdhxgpysx";
-        authors = [
-          "Sean Bowe <ewillbefull@gmail.com>"
-          "Jack Grigg <jack@z.cash>"
-        ];
-        dependencies = [
-          {
-            name = "ff";
-            packageId = "ff";
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "rand_core";
-            packageId = "rand_core";
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "subtle";
-            packageId = "subtle";
-            usesDefaultFeatures = false;
-          }
-        ];
-        features = {
-          "default" = [ "alloc" ];
-          "memuse" = [ "dep:memuse" ];
-          "rand" = [ "dep:rand" ];
-          "rand_xorshift" = [ "dep:rand_xorshift" ];
-          "tests" = [ "alloc" "rand" "rand_xorshift" ];
-          "wnaf-memuse" = [ "alloc" "memuse" ];
-        };
       };
       "h2 0.3.27" = rec {
         crateName = "h2";
@@ -4283,7 +3864,6 @@ rec {
         features = {
           "std" = [ "digest/std" ];
         };
-        resolvedDefaultFeatures = [ "reset" ];
       };
       "http 0.2.12" = rec {
         crateName = "http";
@@ -5822,69 +5402,6 @@ rec {
         sha256 = "03pzw9aj4qskqhh0fkagy2mkgfwgj5a1m67ajlba5hw80h68100s";
 
       };
-      "p256" = rec {
-        crateName = "p256";
-        version = "0.11.1";
-        edition = "2021";
-        sha256 = "151mqd8m25c8ib97saz4fwkg4nhw098i051gazg2l7pm13flxx2i";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "ecdsa";
-            packageId = "ecdsa";
-            rename = "ecdsa-core";
-            optional = true;
-            usesDefaultFeatures = false;
-            features = [ "der" ];
-          }
-          {
-            name = "elliptic-curve";
-            packageId = "elliptic-curve";
-            usesDefaultFeatures = false;
-            features = [ "hazmat" "sec1" ];
-          }
-          {
-            name = "sha2";
-            packageId = "sha2";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-        ];
-        devDependencies = [
-          {
-            name = "ecdsa";
-            packageId = "ecdsa";
-            rename = "ecdsa-core";
-            usesDefaultFeatures = false;
-            features = [ "dev" ];
-          }
-        ];
-        features = {
-          "arithmetic" = [ "elliptic-curve/arithmetic" ];
-          "bits" = [ "arithmetic" "elliptic-curve/bits" ];
-          "default" = [ "arithmetic" "ecdsa" "pkcs8" "std" ];
-          "digest" = [ "ecdsa-core/digest" "ecdsa-core/hazmat" ];
-          "ecdh" = [ "arithmetic" "elliptic-curve/ecdh" ];
-          "ecdsa" = [ "arithmetic" "ecdsa-core/sign" "ecdsa-core/verify" "sha256" ];
-          "ecdsa-core" = [ "dep:ecdsa-core" ];
-          "expose-field" = [ "arithmetic" ];
-          "hash2curve" = [ "arithmetic" "elliptic-curve/hash2curve" ];
-          "hex-literal" = [ "dep:hex-literal" ];
-          "jwk" = [ "elliptic-curve/jwk" ];
-          "pem" = [ "elliptic-curve/pem" "ecdsa-core/pem" "pkcs8" ];
-          "pkcs8" = [ "ecdsa-core/pkcs8" "elliptic-curve/pkcs8" ];
-          "serde" = [ "ecdsa-core/serde" "elliptic-curve/serde" "serdect" ];
-          "serdect" = [ "dep:serdect" ];
-          "sha2" = [ "dep:sha2" ];
-          "sha256" = [ "digest" "sha2" ];
-          "std" = [ "ecdsa-core/std" "elliptic-curve/std" ];
-          "test-vectors" = [ "hex-literal" ];
-          "voprf" = [ "elliptic-curve/voprf" "sha2" ];
-        };
-        resolvedDefaultFeatures = [ "arithmetic" "default" "digest" "ecdsa" "ecdsa-core" "pkcs8" "sha2" "sha256" "std" ];
-      };
       "parking_lot" = rec {
         crateName = "parking_lot";
         version = "0.12.5";
@@ -5984,40 +5501,6 @@ rec {
           "Josef Brandl <mail@josefbrandl.de>"
         ];
 
-      };
-      "pkcs8" = rec {
-        crateName = "pkcs8";
-        version = "0.9.0";
-        edition = "2021";
-        sha256 = "1fm4sigvcd0zpzg9jcp862a8p272kk08b9lgcs1dm1az19cjrjly";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "der";
-            packageId = "der";
-            features = [ "oid" ];
-          }
-          {
-            name = "spki";
-            packageId = "spki";
-          }
-        ];
-        features = {
-          "3des" = [ "encryption" "pkcs5/3des" ];
-          "alloc" = [ "der/alloc" "der/zeroize" "spki/alloc" ];
-          "des-insecure" = [ "encryption" "pkcs5/des-insecure" ];
-          "encryption" = [ "alloc" "pkcs5/alloc" "pkcs5/pbes2" "rand_core" ];
-          "getrandom" = [ "rand_core/getrandom" ];
-          "pem" = [ "alloc" "der/pem" "spki/pem" ];
-          "pkcs5" = [ "dep:pkcs5" ];
-          "rand_core" = [ "dep:rand_core" ];
-          "sha1" = [ "encryption" "pkcs5/sha1" ];
-          "std" = [ "alloc" "der/std" "spki/std" ];
-          "subtle" = [ "dep:subtle" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" ];
       };
       "portable-atomic" = rec {
         crateName = "portable-atomic";
@@ -6125,30 +5608,6 @@ rec {
           "examples" = [ "native" ];
           "rustc-dep-of-std" = [ "core" ];
         };
-      };
-      "rand_core" = rec {
-        crateName = "rand_core";
-        version = "0.6.4";
-        edition = "2018";
-        sha256 = "0b4j2v4cb5krak1pv6kakv4sz6xcwbrmy2zckc32hsigbrwy82zc";
-        authors = [
-          "The Rand Project Developers"
-          "The Rust Project Developers"
-        ];
-        dependencies = [
-          {
-            name = "getrandom";
-            packageId = "getrandom 0.2.17";
-            optional = true;
-          }
-        ];
-        features = {
-          "getrandom" = [ "dep:getrandom" ];
-          "serde" = [ "dep:serde" ];
-          "serde1" = [ "serde" ];
-          "std" = [ "alloc" "getrandom" "getrandom/std" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" "getrandom" "std" ];
       };
       "redox_syscall" = rec {
         crateName = "redox_syscall";
@@ -6264,35 +5723,6 @@ rec {
           "unicode" = [ "unicode-age" "unicode-bool" "unicode-case" "unicode-gencat" "unicode-perl" "unicode-script" "unicode-segment" ];
         };
         resolvedDefaultFeatures = [ "std" ];
-      };
-      "rfc6979" = rec {
-        crateName = "rfc6979";
-        version = "0.3.1";
-        edition = "2021";
-        sha256 = "1fzsp705b5lhwd2r9il9grc3lj6rm3b2r89vh0xv181gy5xg2hvp";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "crypto-bigint";
-            packageId = "crypto-bigint 0.4.9";
-            usesDefaultFeatures = false;
-            features = [ "generic-array" "zeroize" ];
-          }
-          {
-            name = "hmac";
-            packageId = "hmac";
-            usesDefaultFeatures = false;
-            features = [ "reset" ];
-          }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
-            usesDefaultFeatures = false;
-          }
-        ];
-
       };
       "ring" = rec {
         crateName = "ring";
@@ -6667,69 +6097,6 @@ rec {
         ];
 
       };
-      "sec1" = rec {
-        crateName = "sec1";
-        version = "0.3.0";
-        edition = "2021";
-        sha256 = "0a09lk5w3nyggpyz54m10nnlg9v8qbh6kw3v1bgla31988c4rqiv";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "base16ct";
-            packageId = "base16ct";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "der";
-            packageId = "der";
-            optional = true;
-            features = [ "oid" ];
-          }
-          {
-            name = "generic-array";
-            packageId = "generic-array";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "pkcs8";
-            packageId = "pkcs8";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "subtle";
-            packageId = "subtle";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-        ];
-        features = {
-          "alloc" = [ "der/alloc" "pkcs8/alloc" "zeroize/alloc" ];
-          "base16ct" = [ "dep:base16ct" ];
-          "default" = [ "der" "point" ];
-          "der" = [ "dep:der" ];
-          "generic-array" = [ "dep:generic-array" ];
-          "pem" = [ "alloc" "der/pem" "pkcs8/pem" ];
-          "pkcs8" = [ "dep:pkcs8" ];
-          "point" = [ "base16ct" "generic-array" ];
-          "serde" = [ "serdect" ];
-          "serdect" = [ "dep:serdect" ];
-          "std" = [ "der/std" "alloc" ];
-          "subtle" = [ "dep:subtle" ];
-          "zeroize" = [ "dep:zeroize" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" "base16ct" "default" "der" "generic-array" "pkcs8" "point" "subtle" "zeroize" ];
-      };
       "security-framework" = rec {
         crateName = "security-framework";
         version = "3.7.0";
@@ -7042,39 +6409,6 @@ rec {
         ];
 
       };
-      "signature" = rec {
-        crateName = "signature";
-        version = "1.6.4";
-        edition = "2021";
-        sha256 = "0z3xg405pg827g6hfdprnszsdqkkbrsfx7f1dl04nv9g7cxks8vl";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "digest";
-            packageId = "digest";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "rand_core";
-            packageId = "rand_core";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-        ];
-        features = {
-          "default" = [ "std" ];
-          "derive-preview" = [ "digest-preview" "signature_derive" ];
-          "digest" = [ "dep:digest" ];
-          "digest-preview" = [ "digest" ];
-          "rand-preview" = [ "rand_core" ];
-          "rand_core" = [ "dep:rand_core" ];
-          "signature_derive" = [ "dep:signature_derive" ];
-        };
-        resolvedDefaultFeatures = [ "digest" "digest-preview" "hazmat-preview" "rand-preview" "rand_core" "std" ];
-      };
       "slab" = rec {
         crateName = "slab";
         version = "0.4.12";
@@ -7185,37 +6519,6 @@ rec {
         };
         resolvedDefaultFeatures = [ "mutex" "once" "rwlock" "spin_mutex" ];
       };
-      "spki" = rec {
-        crateName = "spki";
-        version = "0.6.0";
-        edition = "2021";
-        sha256 = "0ar1ldkl7svp8l3gfw2hyiiph7n2nqynjnjgdv1pscvsmjxh5kv7";
-        authors = [
-          "RustCrypto Developers"
-        ];
-        dependencies = [
-          {
-            name = "base64ct";
-            packageId = "base64ct";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
-          {
-            name = "der";
-            packageId = "der";
-            features = [ "oid" ];
-          }
-        ];
-        features = {
-          "alloc" = [ "base64ct/alloc" "der/alloc" ];
-          "base64ct" = [ "dep:base64ct" ];
-          "fingerprint" = [ "sha2" ];
-          "pem" = [ "alloc" "der/pem" ];
-          "sha2" = [ "dep:sha2" ];
-          "std" = [ "der/std" "alloc" ];
-        };
-        resolvedDefaultFeatures = [ "alloc" "base64ct" ];
-      };
       "stable_deref_trait" = rec {
         crateName = "stable_deref_trait";
         version = "1.2.1";
@@ -7252,7 +6555,6 @@ rec {
         features = {
           "default" = [ "std" "i128" ];
         };
-        resolvedDefaultFeatures = [ "default" "i128" "std" ];
       };
       "syn" = rec {
         crateName = "syn";
