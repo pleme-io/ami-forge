@@ -1,4 +1,5 @@
 mod build;
+mod packer;
 mod rotate;
 mod status;
 mod trigger;
@@ -22,6 +23,9 @@ enum Command {
     /// Build an AMI from a nix disk image: upload, import, tag, and update SSM
     Build(build::BuildArgs),
 
+    /// Build AMI via Packer — runs packer build on a JSON template
+    Packer(packer::PackerArgs),
+
     /// Deregister an AMI by name and delete its orphaned EBS snapshots
     Rotate(rotate::RotateArgs),
 
@@ -44,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Build(args) => build::run(args).await,
+        Command::Packer(args) => packer::run(args).await,
         Command::Rotate(args) => rotate::run(args).await,
         Command::Status(args) => status::run(args).await,
         Command::Trigger(args) => trigger::run(args).await,
