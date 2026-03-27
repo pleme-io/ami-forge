@@ -17,12 +17,12 @@ name = "ami-forge"
 path = "src/main.rs"
 
 [dependencies]
-# AWS SDK
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-ec2 = "1"
-aws-sdk-s3 = "1"
-aws-sdk-ssm = "1"
-aws-sdk-codebuild = "1"
+# AWS SDK — rustls TLS backend (no C dependencies)
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio", "credentials-process", "sso"] }
+aws-sdk-ec2 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-sdk-ssm = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-sdk-codebuild = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
