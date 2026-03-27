@@ -1,6 +1,7 @@
 mod build;
 mod rotate;
 mod status;
+mod trigger;
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -26,6 +27,9 @@ enum Command {
 
     /// Show current AMI status from SSM and/or EC2
     Status(status::StatusArgs),
+
+    /// Start a CodeBuild build and optionally wait for completion
+    Trigger(trigger::TriggerArgs),
 }
 
 #[tokio::main]
@@ -42,5 +46,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Build(args) => build::run(args).await,
         Command::Rotate(args) => rotate::run(args).await,
         Command::Status(args) => status::run(args).await,
+        Command::Trigger(args) => trigger::run(args).await,
     }
 }
