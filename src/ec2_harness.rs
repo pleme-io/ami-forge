@@ -322,14 +322,32 @@ async fn wait_for_running(
     ec2: &aws_sdk_ec2::Client, instance_ids: &[String], az: &str, max_wait: Duration,
 ) -> anyhow::Result<Vec<TestInstance>> {
     let start = Instant::now();
+
+    // Initial delay for EC2 eventual consistency (instance IDs may not be
+    // immediately visible to DescribeInstances after RunInstances returns)
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
     loop {
         if start.elapsed() > max_wait {
             bail!("instances did not reach running state within {}s", max_wait.as_secs());
         }
 
-        let resp = ec2.describe_instances()
+        let resp = match ec2.describe_instances()
             .set_instance_ids(Some(instance_ids.to_vec()))
-            .send().await.context("DescribeInstances failed")?;
+            .send().await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                // EC2 eventual consistency: instance ID may not be visible yet
+                let err_str = format!("{e}");
+                if err_str.contains("InvalidInstanceID.NotFound") {
+                    info!("instance ID not yet visible (eventual consistency), retrying...");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+                return Err(e).context("DescribeInstances failed");
+            }
+        };
 
         let mut ready: Vec<TestInstance> = Vec::new();
         for reservation in resp.reservations() {
