@@ -1,8 +1,8 @@
 //! EC2 boot test: launch one instance from an AMI and verify it boots
 //! correctly with all expected binaries and services.
 //!
-//! Uses the [`ec2_harness`] for instance lifecycle and [`ssh`] for remote
-//! command execution. Measures boot timing metrics.
+//! Uses the [`ec2_harness`] for instance lifecycle (EC2 key pair for SSH)
+//! and [`ssh`] for remote command execution. Measures boot timing metrics.
 
 use std::time::{Duration, Instant};
 
@@ -60,10 +60,7 @@ pub async fn run(args: BootTestArgs) -> anyhow::Result<()> {
 
     let config = aws::load_config(&args.region).await;
     let ec2 = aws_sdk_ec2::Client::new(&config);
-    let ec2ic = aws_sdk_ec2instanceconnect::Client::new(&config);
-    let ssh_key = ssh::EphemeralSshKey::generate()?;
 
-    // Stand up one instance
     let harness_config = ec2_harness::HarnessConfig {
         ami_id: args.ami_id.clone(),
         instance_type: args.instance_type.clone(),
@@ -76,26 +73,23 @@ pub async fn run(args: BootTestArgs) -> anyhow::Result<()> {
     let launch_time = start.elapsed();
     info!(secs = launch_time.as_secs(), "instance running");
 
-    // Run checks, ensuring cleanup
-    let result = run_checks(&env, &ec2ic, &ssh_key, &args, start, launch_time, max_duration).await;
+    let result = run_checks(&env, &args, start, launch_time, max_duration).await;
     env.cleanup().await;
     result
 }
 
 async fn run_checks(
     env: &ec2_harness::TestEnv,
-    ec2ic: &aws_sdk_ec2instanceconnect::Client,
-    ssh_key: &ssh::EphemeralSshKey,
     args: &BootTestArgs,
     start: Instant,
     launch_time: Duration,
     max_duration: Duration,
 ) -> anyhow::Result<()> {
-    // Wait for SSH
+    // Wait for SSH (using EC2 key pair — NixOS reads it from IMDS)
     let ssh_start = Instant::now();
     let remaining = max_duration.saturating_sub(start.elapsed());
     let session = env
-        .ssh_to(0, ec2ic, ssh_key, &args.ssh_user, remaining)
+        .ssh_to(0, &args.ssh_user, remaining)
         .await
         .context("SSH to instance failed")?;
     let ssh_time = ssh_start.elapsed();

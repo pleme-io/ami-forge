@@ -1,9 +1,9 @@
 //! EC2 VPN integration test: launch two instances from an AMI and verify
 //! `WireGuard` tunnel connectivity between them.
 //!
-//! Uses the [`ec2_harness`] for instance lifecycle and [`ssh`] for remote
-//! command execution. The test-specific logic is just `WireGuard` config
-//! generation and tunnel verification.
+//! Uses the [`ec2_harness`] for instance lifecycle (EC2 key pair for SSH)
+//! and [`ssh`] for remote command execution. The test-specific logic is
+//! `WireGuard` config generation and tunnel verification.
 
 use std::time::{Duration, Instant};
 
@@ -80,19 +80,15 @@ pub async fn run(args: VpnTestArgs) -> anyhow::Result<()> {
 
     info!(ami = %args.ami_id, "Starting VPN connectivity test");
 
-    // Build AWS clients
     let config = aws::load_config(&args.region).await;
     let ec2 = aws_sdk_ec2::Client::new(&config);
-    let ec2ic = aws_sdk_ec2instanceconnect::Client::new(&config);
 
-    // Generate ephemeral keys
+    // Generate ephemeral WireGuard keys
     let server_kp = wg::generate_keypair();
     let client_kp = wg::generate_keypair();
     let psk = wg::generate_psk();
-    let ssh_key = ssh::EphemeralSshKey::generate()?;
-    info!("Generated ephemeral WireGuard + SSH keys");
+    info!("Generated ephemeral WireGuard keys");
 
-    // Stand up test environment
     let harness_config = ec2_harness::HarnessConfig {
         ami_id: args.ami_id.clone(),
         instance_type: args.instance_type.clone(),
@@ -105,25 +101,19 @@ pub async fn run(args: VpnTestArgs) -> anyhow::Result<()> {
     let launch_time = start.elapsed();
     info!(secs = launch_time.as_secs(), "test environment ready");
 
-    // Run the test, ensuring cleanup happens regardless of outcome
     let result = run_vpn_test(
-        &env, &ec2ic, &ssh_key, &args.ssh_user,
+        &env, &args.ssh_user,
         &server_kp, &client_kp, &psk,
         start, launch_time, max_duration,
-    )
-    .await;
+    ).await;
 
-    // Always cleanup
     env.cleanup().await;
-
     result
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_vpn_test(
     env: &ec2_harness::TestEnv,
-    ec2ic: &aws_sdk_ec2instanceconnect::Client,
-    ssh_key: &ssh::EphemeralSshKey,
     ssh_user: &str,
     server_kp: &wg::KeyPair,
     client_kp: &wg::KeyPair,
@@ -135,95 +125,65 @@ async fn run_vpn_test(
     let server = &env.instances[0];
     let client = &env.instances[1];
 
-    // --- SSH readiness ---
+    // SSH readiness (using EC2 key pair)
     let ssh_start = Instant::now();
     let remaining = max_duration.saturating_sub(start.elapsed());
-
-    let server_session = env
-        .ssh_to(0, ec2ic, ssh_key, ssh_user, remaining)
-        .await
+    let server_session = env.ssh_to(0, ssh_user, remaining).await
         .context("SSH to server instance failed")?;
 
     let remaining = max_duration.saturating_sub(start.elapsed());
-    let client_session = env
-        .ssh_to(1, ec2ic, ssh_key, ssh_user, remaining)
-        .await
+    let client_session = env.ssh_to(1, ssh_user, remaining).await
         .context("SSH to client instance failed")?;
 
     let ssh_ready_time = ssh_start.elapsed();
     info!(secs = ssh_ready_time.as_secs(), "SSH ready on both instances");
 
-    // --- Configure WireGuard server ---
+    // Configure WireGuard server
     let tunnel_start = Instant::now();
-
     let server_config = wg::server_config(
-        &server_kp.private_key,
-        SERVER_TUNNEL_ADDR,
-        WG_PORT,
-        &client_kp.public_key,
-        &format!("{CLIENT_TUNNEL_IP}/32"),
-        psk,
+        &server_kp.private_key, SERVER_TUNNEL_ADDR, WG_PORT,
+        &client_kp.public_key, &format!("{CLIENT_TUNNEL_IP}/32"), psk,
     );
     ssh::write_file(&server_session, WG_CONFIG_PATH, &server_config).await?;
     ssh::run_cmd(&server_session, &format!("wg-quick up {WG_CONFIG_PATH}")).await?;
     info!("WireGuard server configured and up");
 
-    // --- Configure WireGuard client ---
+    // Configure WireGuard client
     let client_config = wg::client_config(
-        &client_kp.private_key,
-        CLIENT_TUNNEL_ADDR,
-        &server_kp.public_key,
+        &client_kp.private_key, CLIENT_TUNNEL_ADDR, &server_kp.public_key,
         &format!("{}:{WG_PORT}", server.private_ip),
-        &format!("{SERVER_TUNNEL_IP}/32"),
-        psk,
-        5,
+        &format!("{SERVER_TUNNEL_IP}/32"), psk, 5,
     );
     ssh::write_file(&client_session, WG_CONFIG_PATH, &client_config).await?;
     ssh::run_cmd(&client_session, &format!("wg-quick up {WG_CONFIG_PATH}")).await?;
     let tunnel_up_time = tunnel_start.elapsed();
     info!(secs = tunnel_up_time.as_secs(), "WireGuard client configured and up");
 
-    // --- Verify tunnel ---
+    // Verify tunnel
     let ping_start = Instant::now();
 
-    // Check interfaces
     let wg_show = ssh::run_cmd(&client_session, &format!("wg show {WG_INTERFACE}")).await?;
     info!(output = %wg_show.trim(), "client wg show");
-
     let wg_show = ssh::run_cmd(&server_session, &format!("wg show {WG_INTERFACE}")).await?;
     info!(output = %wg_show.trim(), "server wg show");
 
     // Bidirectional ping
-    ssh::run_cmd(
-        &client_session,
-        &format!("ping -c 3 -W 5 {SERVER_TUNNEL_IP}"),
-    )
-    .await
-    .context("client -> server tunnel ping failed")?;
+    ssh::run_cmd(&client_session, &format!("ping -c 3 -W 5 {SERVER_TUNNEL_IP}")).await
+        .context("client -> server tunnel ping failed")?;
     info!("client ({}) -> server tunnel ping: OK", client.private_ip);
 
-    ssh::run_cmd(
-        &server_session,
-        &format!("ping -c 3 -W 5 {CLIENT_TUNNEL_IP}"),
-    )
-    .await
-    .context("server -> client tunnel ping failed")?;
+    ssh::run_cmd(&server_session, &format!("ping -c 3 -W 5 {CLIENT_TUNNEL_IP}")).await
+        .context("server -> client tunnel ping failed")?;
     info!("server ({}) -> client tunnel ping: OK", server.private_ip);
 
     let ping_success_time = ping_start.elapsed();
-
-    // --- Report ---
     let metrics = TestMetrics {
-        launch_time,
-        ssh_ready_time,
-        tunnel_up_time,
-        ping_success_time,
+        launch_time, ssh_ready_time, tunnel_up_time, ping_success_time,
         total_time: start.elapsed(),
     };
     info!("VPN test PASSED: {metrics}");
 
     server_session.close().await.ok();
     client_session.close().await.ok();
-
     Ok(())
 }

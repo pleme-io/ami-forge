@@ -27,6 +27,11 @@ pub struct EphemeralSshKey {
     private_key_path: PathBuf,
 }
 
+// EC2 Instance Connect methods below are kept as backup — primary SSH uses
+// EC2 key pairs (see ec2_harness.rs). Enable these when EC2 Instance Connect
+// agent is added to the NixOS AMI.
+
+#[allow(dead_code)]
 impl EphemeralSshKey {
     /// Generate a new ephemeral Ed25519 SSH key pair.
     ///
@@ -74,6 +79,7 @@ impl EphemeralSshKey {
     }
 }
 
+#[allow(dead_code)]
 /// Push an SSH public key to an EC2 instance via EC2 Instance Connect.
 ///
 /// The key is available for 60 seconds. Connect within that window.
@@ -102,6 +108,7 @@ pub async fn push_ssh_key(
     Ok(())
 }
 
+#[allow(dead_code)]
 /// Establish a multiplexed SSH session to a host using an ephemeral key.
 ///
 /// Uses `ControlMaster` so all subsequent commands share one TCP connection,
@@ -127,6 +134,7 @@ pub async fn connect(
     Ok(session)
 }
 
+#[allow(dead_code)]
 /// Wait for SSH to become available on a host, retrying with backoff.
 ///
 /// Pushes the SSH key before each attempt (refreshes the 60s TTL).
@@ -166,6 +174,45 @@ pub async fn wait_for_ssh(
                     elapsed = ?start.elapsed(),
                     "SSH not ready yet, retrying..."
                 );
+                tokio::time::sleep(retry_interval).await;
+            }
+        }
+    }
+}
+
+/// Wait for SSH using an EC2 key pair (private key file on disk).
+///
+/// This is the primary SSH method — works with any NixOS AMI that includes
+/// `amazon-image.nix` (reads key pair from IMDS, adds to root's authorized_keys).
+pub async fn wait_for_ssh_direct(
+    host: &str,
+    os_user: &str,
+    key_path: &Path,
+    max_wait: Duration,
+) -> anyhow::Result<openssh::Session> {
+    let start = std::time::Instant::now();
+    let retry_interval = Duration::from_secs(5);
+
+    loop {
+        if start.elapsed() > max_wait {
+            bail!("SSH to {host} not ready after {}s", max_wait.as_secs());
+        }
+
+        let destination = format!("{os_user}@{host}");
+        match openssh::SessionBuilder::default()
+            .keyfile(key_path)
+            .known_hosts_check(openssh::KnownHosts::Accept)
+            .connect_timeout(Duration::from_secs(10))
+            .server_alive_interval(Duration::from_secs(15))
+            .connect(&destination)
+            .await
+        {
+            Ok(session) => {
+                info!(host = %host, elapsed = ?start.elapsed(), "SSH session established");
+                return Ok(session);
+            }
+            Err(e) => {
+                info!(error = %e, elapsed = ?start.elapsed(), "SSH not ready yet, retrying...");
                 tokio::time::sleep(retry_interval).await;
             }
         }
