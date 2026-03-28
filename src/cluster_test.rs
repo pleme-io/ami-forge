@@ -63,17 +63,34 @@ pub async fn run(args: ClusterTestArgs) -> Result<()> {
     result
 }
 
+/// Node roles in the test cluster
+struct NodeConfig {
+    name: &'static str,
+    role: &'static str,      // "server" or "agent"
+    cluster_init: bool,
+    vpn_address: &'static str,
+    node_index: u32,
+}
+
+const CLUSTER_NODES: &[NodeConfig] = &[
+    NodeConfig { name: "cp",      role: "server", cluster_init: true,  vpn_address: "10.99.0.1/24", node_index: 0 },
+    NodeConfig { name: "system",  role: "server", cluster_init: false, vpn_address: "10.99.0.2/24", node_index: 1 },
+    NodeConfig { name: "worker1", role: "agent",  cluster_init: false, vpn_address: "10.99.0.3/24", node_index: 2 },
+    NodeConfig { name: "worker2", role: "agent",  cluster_init: false, vpn_address: "10.99.0.4/24", node_index: 3 },
+    NodeConfig { name: "client",  role: "agent",  cluster_init: false, vpn_address: "10.99.0.5/24", node_index: 4 },
+];
+
 async fn run_inner(
     ec2: &aws_sdk_ec2::Client,
     args: &ClusterTestArgs,
     res: &mut TestResources,
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(args.timeout);
+    let node_count = CLUSTER_NODES.len();
 
-    // 1. Generate WireGuard keypairs for both nodes
-    info!("[cluster-test:1/7] Generating WireGuard keypairs");
-    let cp_keys = wg::generate_keypair();
-    let worker_keys = wg::generate_keypair();
+    // 1. Generate WireGuard keypairs for all nodes
+    info!("[cluster-test:1/7] Generating WireGuard keypairs for {node_count} nodes");
+    let keys: Vec<_> = (0..node_count).map(|_| wg::generate_keypair()).collect();
     let psk = wg::generate_psk();
 
     // 2. Create temp EC2 keypair
@@ -185,83 +202,92 @@ async fn run_inner(
         .send()
         .await?;
 
-    // 4. Launch CP instance
-    info!("[cluster-test:4/7] Launching control plane instance");
+    // 4. Launch CP instance first (others need its IP)
+    info!("[cluster-test:4/7] Launching {node_count}-node cluster (1 CP, 1 system, 2 workers, 1 client)");
     let k3s_token = "ami-forge-cluster-test-token";
-    let cp_userdata = generate_cp_userdata(
-        &cp_keys.private_key,
-        &worker_keys.public_key,
+
+    // Build peer list for each node: every node peers with every other node via CP's hub
+    // CP is the hub — all other nodes have CP's endpoint, CP has no endpoints (responds to incoming)
+    let cp_userdata = generate_node_userdata(
+        &CLUSTER_NODES[0],
+        &keys[0].private_key,
+        &keys,
         &psk,
         k3s_token,
+        None, // CP has no join_server
+        None, // No CP IP yet (it IS the CP)
     );
-    let cp_id =
-        launch_instance(ec2, &args.ami_id, &cp_userdata, &keypair_name, &sg_id, &args.instance_type)
-            .await?;
+
+    let cp_id = launch_instance(ec2, &args.ami_id, &cp_userdata, &keypair_name, &sg_id, &args.instance_type).await?;
     res.instance_ids.push(cp_id.clone());
 
-    // Wait for CP to get IPs
     let (cp_private_ip, cp_public_ip) = wait_for_ips(ec2, &cp_id, deadline).await?;
-    info!("CP instance {cp_id}: private={cp_private_ip} public={cp_public_ip}");
+    info!("  cp: {cp_id} private={cp_private_ip} public={cp_public_ip}");
 
-    // 5. Launch worker instance (join_server = CP's private IP)
-    info!("[cluster-test:5/7] Launching worker instance");
-    let worker_userdata = generate_worker_userdata(
-        &worker_keys.private_key,
-        &cp_keys.public_key,
-        &psk,
-        k3s_token,
-        &cp_private_ip,
-    );
-    let worker_id = launch_instance(
-        ec2,
-        &args.ami_id,
-        &worker_userdata,
-        &keypair_name,
-        &sg_id,
-        &args.instance_type,
-    )
-    .await?;
-    res.instance_ids.push(worker_id.clone());
+    // Launch remaining 4 nodes (system, worker1, worker2, client)
+    let mut node_ips: Vec<(String, String)> = vec![(cp_private_ip.clone(), cp_public_ip.clone())];
 
-    let (worker_private_ip, _worker_public_ip) = wait_for_ips(ec2, &worker_id, deadline).await?;
-    info!("Worker instance {worker_id}: private={worker_private_ip}");
+    for (i, node) in CLUSTER_NODES.iter().enumerate().skip(1) {
+        let join = if node.role != "agent" || node.name == "client" {
+            // Servers and client join via K3s API
+            Some(format!("https://{}:6443", cp_private_ip))
+        } else {
+            // Agents join via K3s API
+            Some(format!("https://{}:6443", cp_private_ip))
+        };
 
-    // 6. Wait for SSH on CP
-    info!("[cluster-test:6/7] Waiting for SSH on control plane");
+        let userdata = generate_node_userdata(
+            node,
+            &keys[i].private_key,
+            &keys,
+            &psk,
+            k3s_token,
+            join.as_deref(),
+            Some(&cp_private_ip),
+        );
+
+        let id = launch_instance(ec2, &args.ami_id, &userdata, &keypair_name, &sg_id, &args.instance_type).await?;
+        res.instance_ids.push(id.clone());
+
+        let (priv_ip, pub_ip) = wait_for_ips(ec2, &id, deadline).await?;
+        info!("  {}: {id} private={priv_ip}", node.name);
+        node_ips.push((priv_ip, pub_ip));
+    }
+
+    // 5. Wait for SSH on CP
+    info!("[cluster-test:5/7] Waiting for SSH on control plane");
     wait_for_ssh(&cp_public_ip, &key_file, deadline).await?;
 
-    // 7. Run validation checks via SSH
+    // Also wait for SSH on client node
+    let client_public_ip = &node_ips[4].1;
+    info!("[cluster-test:6/7] Waiting for SSH on client node");
+    wait_for_ssh(client_public_ip, &key_file, deadline).await?;
+
+    // 7. Run validation checks
     info!("[cluster-test:7/7] Running cluster validation");
     let mut passed = 0;
     let mut total = 0;
 
-    // Wait for kindling-init to complete on CP
+    // Check 1: kindling-init completed on CP
+    total += 1;
     let init_ok = ssh_poll(
         &cp_public_ip,
         &key_file,
         "systemctl show kindling-init.service --property=ActiveState | grep -q active",
         deadline,
         Duration::from_secs(5),
-    )
-    .await;
-    total += 1;
+    ).await;
     if init_ok {
         passed += 1;
         info!("[PASS] cp-kindling-init: completed");
     } else {
         error!("[FAIL] cp-kindling-init: timed out");
-        // Dump journal for debugging
         ssh_cmd(&cp_public_ip, &key_file, "journalctl -u kindling-init -n 30 --no-pager").await;
     }
 
-    // Check WireGuard on CP
+    // Check 2: WireGuard on CP has peers
     total += 1;
-    let wg_ok = ssh_check(
-        &cp_public_ip,
-        &key_file,
-        "wg show all dump | grep -q wg-",
-    )
-    .await;
+    let wg_ok = ssh_check(&cp_public_ip, &key_file, "wg show all dump | grep -q wg-").await;
     if wg_ok {
         passed += 1;
         info!("[PASS] cp-wireguard: interface configured");
@@ -269,109 +295,142 @@ async fn run_inner(
         error!("[FAIL] cp-wireguard: no interface");
     }
 
-    // Check K3s 2-node cluster: CP (server) + worker (agent) both Ready
+    // Check 3: All {node_count} nodes Ready in K3s
+    // Client node runs as agent too, so it registers with K3s
     total += 1;
-    let k3s_ok = ssh_poll(
-        &cp_public_ip,
-        &key_file,
-        "test $(kubectl get nodes --no-headers 2>/dev/null | grep -c Ready) -ge 2",
-        deadline,
-        Duration::from_secs(10),
-    )
-    .await;
+    let expected_nodes = node_count;
+    let k3s_check = format!(
+        "test $(kubectl get nodes --no-headers 2>/dev/null | grep -c Ready) -ge {expected_nodes}"
+    );
+    let k3s_ok = ssh_poll(&cp_public_ip, &key_file, &k3s_check, deadline, Duration::from_secs(10)).await;
     if k3s_ok {
         passed += 1;
-        let node_info = ssh_output(
-            &cp_public_ip,
-            &key_file,
-            "kubectl get nodes --no-headers",
-        )
-        .await;
-        info!("[PASS] k3s-cluster: 2 nodes Ready\n{node_info}");
+        let node_info = ssh_output(&cp_public_ip, &key_file, "kubectl get nodes --no-headers").await;
+        info!("[PASS] k3s-cluster: {expected_nodes} nodes Ready\n{node_info}");
     } else {
-        error!("[FAIL] k3s-cluster: did not reach 2 Ready nodes");
+        error!("[FAIL] k3s-cluster: did not reach {expected_nodes} Ready nodes");
         let node_info = ssh_output(
             &cp_public_ip,
             &key_file,
             "kubectl get nodes --no-headers 2>&1; echo '---'; journalctl -u k3s -n 20 --no-pager",
-        )
-        .await;
+        ).await;
         error!("K3s debug:\n{node_info}");
     }
 
-    // Check VPN peering — handshake between CP and worker.
-    // Worker has persistent_keepalive=25 so it sends within 25s.
+    // Check 4: VPN peering — at least 2 peers with handshake on CP
     total += 1;
     let vpn_ok = ssh_poll(
         &cp_public_ip,
         &key_file,
-        "wg show all latest-handshakes 2>/dev/null | awk '{if($3>0)print}' | grep -q .",
+        "test $(wg show all latest-handshakes 2>/dev/null | awk '{if($3>0)c++}END{print c+0}') -ge 2",
         deadline,
         Duration::from_secs(10),
-    )
-    .await;
+    ).await;
     if vpn_ok {
         passed += 1;
         let wg_info = ssh_output(&cp_public_ip, &key_file, "wg show all").await;
-        info!("[PASS] vpn-peering: WireGuard handshake established\n{wg_info}");
+        info!("[PASS] vpn-peering: multiple WireGuard handshakes\n{wg_info}");
     } else {
-        error!("[FAIL] vpn-peering: no WireGuard handshake");
+        error!("[FAIL] vpn-peering: insufficient WireGuard handshakes");
         let wg_info = ssh_output(&cp_public_ip, &key_file, "wg show all 2>&1").await;
         error!("WireGuard debug:\n{wg_info}");
     }
 
-    // Check kubectl namespaces
+    // Check 5: kubectl from CP
     total += 1;
     let ns_ok = ssh_check(
         &cp_public_ip,
         &key_file,
         "test $(kubectl get namespaces --no-headers 2>/dev/null | wc -l) -ge 4",
-    )
-    .await;
+    ).await;
     if ns_ok {
         passed += 1;
-        info!("[PASS] kubectl-namespaces: 4+ namespaces");
+        info!("[PASS] kubectl-cp: namespaces accessible from CP");
     } else {
-        error!("[FAIL] kubectl-namespaces: insufficient");
+        error!("[FAIL] kubectl-cp: namespaces not accessible");
+    }
+
+    // Check 6: kubectl from CLIENT node via VPN
+    // The client node connects to K3s API at the CP's VPN address (10.99.0.1:6443)
+    total += 1;
+    let client_kubectl_ok = ssh_poll(
+        client_public_ip,
+        &key_file,
+        "kubectl get namespaces --no-headers 2>/dev/null | grep -q default",
+        deadline,
+        Duration::from_secs(10),
+    ).await;
+    if client_kubectl_ok {
+        passed += 1;
+        info!("[PASS] kubectl-client: client node can reach K3s API");
+    } else {
+        error!("[FAIL] kubectl-client: client node cannot reach K3s API");
+        let client_debug = ssh_output(client_public_ip, &key_file, "kubectl get namespaces 2>&1; echo '---'; wg show all 2>&1; echo '---'; journalctl -u kindling-init -n 10 --no-pager").await;
+        error!("Client debug:\n{client_debug}");
     }
 
     println!();
     if passed == total {
-        info!("{passed}/{total} cluster integration checks passed");
+        info!("{passed}/{total} cluster integration checks passed — {node_count}-node cluster verified");
         Ok(())
     } else {
         bail!("{}/{total} cluster integration checks failed", total - passed);
     }
 }
 
-fn generate_cp_userdata(
-    cp_privkey: &str,
-    worker_pubkey: &str,
+/// Generate userdata for any node in the test cluster.
+///
+/// Each node gets a VPN config with the CP as hub. The CP listens (no endpoint),
+/// all other nodes have the CP's private IP as endpoint with persistent_keepalive.
+fn generate_node_userdata(
+    node: &NodeConfig,
+    privkey: &str,
+    all_keys: &[wg::KeyPair],
     psk: &str,
     k3s_token: &str,
+    join_server: Option<&str>,
+    cp_private_ip: Option<&str>,
 ) -> String {
-    serde_json::json!({
+    // Build peer list: this node peers with all OTHER nodes
+    let my_index = node.node_index as usize;
+    let mut peers = Vec::new();
+
+    for (i, _other) in CLUSTER_NODES.iter().enumerate() {
+        if i == my_index {
+            continue;
+        }
+        let mut peer = serde_json::json!({
+            "public_key": all_keys[i].public_key,
+            "allowed_ips": ["10.99.0.0/24"],
+            "preshared_key_file": "/run/secrets.d/vpn-psk",
+            "persistent_keepalive": 25
+        });
+        // Non-CP nodes have CP's endpoint; CP has no endpoint (responds to incoming)
+        if my_index != 0 && i == 0 {
+            if let Some(cp_ip) = cp_private_ip {
+                peer["endpoint"] = serde_json::json!(format!("{cp_ip}:51820"));
+            }
+        }
+        peers.push(peer);
+    }
+
+    let mut data = serde_json::json!({
         "cluster_name": "cluster-test",
-        "role": "server",
+        "role": node.role,
         "distribution": "k3s",
-        "cluster_init": true,
-        "node_index": 0,
+        "cluster_init": node.cluster_init,
+        "node_index": node.node_index,
         "skip_nix_rebuild": true,
         "vpn": {
             "require_liveness": false,
             "links": [{
                 "name": "wg-test",
-                "address": "10.99.0.1/24",
+                "address": node.vpn_address,
                 "private_key_file": "/run/secrets.d/vpn-private-key",
                 "listen_port": 51820,
                 "persistent_keepalive": 25,
                 "profile": "k8s-control-plane",
-                "peers": [{
-                    "public_key": worker_pubkey,
-                    "allowed_ips": ["10.99.0.0/24"],
-                    "preshared_key_file": "/run/secrets.d/vpn-psk",
-                    "persistent_keepalive": 25
-                }],
+                "peers": peers,
                 "firewall": {
                     "trust_interface": false,
                     "allowed_tcp_ports": [6443, 10250],
@@ -381,59 +440,17 @@ fn generate_cp_userdata(
             }]
         },
         "bootstrap_secrets": {
-            "vpn_private_key": cp_privkey,
+            "vpn_private_key": privkey,
             "vpn_psk": psk,
             "k3s_server_token": k3s_token
         }
-    })
-    .to_string()
-}
+    });
 
-fn generate_worker_userdata(
-    worker_privkey: &str,
-    cp_pubkey: &str,
-    psk: &str,
-    k3s_token: &str,
-    cp_private_ip: &str,
-) -> String {
-    serde_json::json!({
-        "cluster_name": "cluster-test",
-        "role": "agent",
-        "distribution": "k3s",
-        "cluster_init": false,
-        "node_index": 1,
-        "skip_nix_rebuild": true,
-        "join_server": format!("https://{}:6443", cp_private_ip),
-        "vpn": {
-            "require_liveness": false,
-            "links": [{
-                "name": "wg-test",
-                "address": "10.99.0.2/24",
-                "private_key_file": "/run/secrets.d/vpn-private-key",
-                "listen_port": 51820,
-                "profile": "k8s-control-plane",
-                "peers": [{
-                    "public_key": cp_pubkey,
-                    "allowed_ips": ["10.99.0.0/24"],
-                    "preshared_key_file": "/run/secrets.d/vpn-psk",
-                    "endpoint": format!("{}:51820", cp_private_ip),
-                    "persistent_keepalive": 25
-                }],
-                "firewall": {
-                    "trust_interface": false,
-                    "allowed_tcp_ports": [6443, 10250],
-                    "allowed_udp_ports": [51820],
-                    "incoming_udp_port": 51820
-                }
-            }]
-        },
-        "bootstrap_secrets": {
-            "vpn_private_key": worker_privkey,
-            "vpn_psk": psk,
-            "k3s_server_token": k3s_token
-        }
-    })
-    .to_string()
+    if let Some(join) = join_server {
+        data["join_server"] = serde_json::json!(join);
+    }
+
+    data.to_string()
 }
 
 async fn launch_instance(
