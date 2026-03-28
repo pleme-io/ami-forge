@@ -2,6 +2,7 @@ mod aws;
 mod boot_check;
 mod build;
 mod manifest;
+mod pipeline;
 mod promote;
 mod rotate;
 mod status;
@@ -44,6 +45,9 @@ enum Command {
 
     /// Start a `CodeBuild` build and optionally wait for completion
     Trigger(trigger::TriggerArgs),
+
+    /// Run the full AMI pipeline: build → test → promote (or rollback)
+    PipelineRun(pipeline::PipelineRunArgs),
 }
 
 #[tokio::main]
@@ -64,5 +68,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Rotate(args) => rotate::run(args).await,
         Command::Status(args) => status::run(args).await,
         Command::Trigger(args) => trigger::run(args).await,
+        Command::PipelineRun(args) => pipeline::run(args).await,
     }
 }
