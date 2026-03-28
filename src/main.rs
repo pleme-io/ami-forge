@@ -1,8 +1,14 @@
+mod aws;
+mod boot_test;
 mod build;
+mod ec2_harness;
 mod packer;
 mod rotate;
+mod ssh;
 mod status;
 mod trigger;
+mod vpn_test;
+mod wg;
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -20,6 +26,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Boot-test an AMI: launch one instance, verify binaries and services
+    BootTest(boot_test::BootTestArgs),
+
     /// Build an AMI from a nix disk image: upload, import, tag, and update SSM
     Build(build::BuildArgs),
 
@@ -32,8 +41,11 @@ enum Command {
     /// Show current AMI status from SSM and/or EC2
     Status(status::StatusArgs),
 
-    /// Start a CodeBuild build and optionally wait for completion
+    /// Start a `CodeBuild` build and optionally wait for completion
     Trigger(trigger::TriggerArgs),
+
+    /// Test VPN connectivity between two instances launched from an AMI
+    VpnTest(vpn_test::VpnTestArgs),
 }
 
 #[tokio::main]
@@ -47,10 +59,12 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::BootTest(args) => boot_test::run(args).await,
         Command::Build(args) => build::run(args).await,
         Command::Packer(args) => packer::run(args).await,
         Command::Rotate(args) => rotate::run(args).await,
         Command::Status(args) => status::run(args).await,
         Command::Trigger(args) => trigger::run(args).await,
+        Command::VpnTest(args) => vpn_test::run(args).await,
     }
 }

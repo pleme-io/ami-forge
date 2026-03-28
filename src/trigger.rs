@@ -8,7 +8,7 @@ use tracing::info;
 
 #[derive(Args)]
 pub struct TriggerArgs {
-    /// CodeBuild project name
+    /// `CodeBuild` project name
     #[arg(long)]
     project: String,
 
@@ -25,7 +25,7 @@ pub struct TriggerArgs {
     env: Vec<String>,
 }
 
-/// Parse a "KEY=VALUE" string into a CodeBuild `EnvironmentVariable`.
+/// Parse a "KEY=VALUE" string into a `CodeBuild` `EnvironmentVariable`.
 fn parse_env_var(s: &str) -> anyhow::Result<EnvironmentVariable> {
     let (key, value) = s
         .split_once('=')
@@ -39,7 +39,7 @@ fn parse_env_var(s: &str) -> anyhow::Result<EnvironmentVariable> {
         .with_context(|| format!("failed to build environment variable from: {s}"))
 }
 
-/// Poll a CodeBuild build until it reaches a terminal state.
+/// Poll a `CodeBuild` build until it reaches a terminal state.
 async fn poll_build(client: &aws_sdk_codebuild::Client, build_id: &str) -> anyhow::Result<()> {
     let pb = ProgressBar::new_spinner();
     pb.set_style(
@@ -102,21 +102,20 @@ async fn poll_build(client: &aws_sdk_codebuild::Client, build_id: &str) -> anyho
                 }
                 StatusType::Failed => {
                     pb.finish_with_message("build FAILED");
-                    bail!("Build {} failed", build_id);
+                    bail!("Build {build_id} failed");
                 }
                 StatusType::TimedOut => {
                     pb.finish_with_message("build TIMED_OUT");
-                    bail!("Build {} timed out", build_id);
+                    bail!("Build {build_id} timed out");
                 }
                 StatusType::Stopped => {
                     pb.finish_with_message("build STOPPED");
-                    bail!("Build {} was stopped", build_id);
+                    bail!("Build {build_id} was stopped");
                 }
                 StatusType::Fault => {
                     pb.finish_with_message("build FAULT");
-                    bail!("Build {} encountered a fault error", build_id);
+                    bail!("Build {build_id} encountered a fault error");
                 }
-                StatusType::InProgress => {}
                 _ => {}
             }
         }
@@ -125,14 +124,9 @@ async fn poll_build(client: &aws_sdk_codebuild::Client, build_id: &str) -> anyho
     }
 }
 
-/// Start a CodeBuild build and optionally wait for completion.
+/// Start a `CodeBuild` build and optionally wait for completion.
 pub async fn run(args: TriggerArgs) -> anyhow::Result<()> {
-    let region = aws_config::Region::new(args.region.clone());
-    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(region)
-        .load()
-        .await;
-
+    let config = crate::aws::load_config(&args.region).await;
     let client = aws_sdk_codebuild::Client::new(&config);
 
     info!("Starting CodeBuild project: {}", args.project);
