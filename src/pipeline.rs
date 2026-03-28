@@ -57,6 +57,10 @@ pub struct PipelineConfig {
     #[serde(default = "default_region")]
     pub region: String,
 
+    /// AWS profile (sets AWS_PROFILE env var if provided)
+    #[serde(default)]
+    pub aws_profile: Option<String>,
+
     /// Packer variable overrides
     #[serde(default)]
     pub packer_vars: std::collections::HashMap<String, String>,
@@ -114,10 +118,18 @@ pub async fn run(args: PipelineArgs) -> anyhow::Result<()> {
     let config: PipelineConfig = serde_json::from_str(&config_str)
         .with_context(|| format!("failed to parse pipeline config: {}", args.config))?;
 
+    // Set AWS_PROFILE if specified in config
+    if let Some(ref profile) = config.aws_profile {
+        // SAFETY: single-threaded at this point (before any async work or threads)
+        unsafe { std::env::set_var("AWS_PROFILE", profile); }
+        info!(profile = %profile, "AWS_PROFILE set from pipeline config");
+    }
+
     info!(
         template = %config.template,
         ssm = %config.ssm_parameter,
         region = %config.region,
+        aws_profile = ?config.aws_profile,
         boot_test = config.tests.boot.enabled,
         vpn_test = config.tests.vpn.enabled,
         "Pipeline config loaded"
