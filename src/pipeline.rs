@@ -166,7 +166,7 @@ pub async fn run(args: PipelineArgs) -> anyhow::Result<()> {
     }
 
     // Promote: update SSM
-    let aws_config = aws::load_config(&config.region).await;
+    let aws_config = config.aws_config().await;
     let ssm = aws_sdk_ssm::Client::new(&aws_config);
     aws::put_ssm_parameter(&ssm, &config.ssm_parameter, &ami_id).await?;
     std::fs::remove_file("packer-manifest.json").ok();
@@ -190,7 +190,13 @@ async fn run_packer_build(config: &PipelineConfig) -> anyhow::Result<String> {
     let mut cmd = std::process::Command::new("packer");
     cmd.args(["build", "-color=false"]);
     for (k, v) in &config.packer_vars {
-        cmd.args(["-var", &format!("{k}={v}")]);
+        // If the value is empty, try to resolve from environment (e.g. GITHUB_TOKEN)
+        let resolved = if v.is_empty() {
+            std::env::var(k.to_uppercase()).unwrap_or_default()
+        } else {
+            v.clone()
+        };
+        cmd.args(["-var", &format!("{k}={resolved}")]);
     }
     cmd.arg(&config.template);
 
