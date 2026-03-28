@@ -136,22 +136,41 @@ pub async fn create(
     let sg_id = create_security_group(ec2, &vpc_id).await?;
     info!(sg = %sg_id, "created ephemeral security group");
 
-    // Launch instances
-    let instance_ids =
-        launch_instances(ec2, &config.ami_id, &config.instance_type, &subnet_id, &sg_id, config.instance_count)
-            .await?;
+    // Launch instances — cleanup SG if launch fails
+    let instance_ids = match launch_instances(
+        ec2, &config.ami_id, &config.instance_type, &subnet_id, &sg_id, config.instance_count,
+    ).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            warn!(sg = %sg_id, error = %e, "instance launch failed, cleaning up SG");
+            ec2.delete_security_group().group_id(&sg_id).send().await.ok();
+            return Err(e.context("failed to launch test instances"));
+        }
+    };
     info!(instances = ?instance_ids, "launched test instances");
 
-    // Wait for running + IPs
-    let instances =
-        wait_for_running(ec2, &instance_ids, &az, config.max_wait).await?;
+    // Wait for running + IPs — cleanup instances + SG if wait fails
+    let instances = match wait_for_running(ec2, &instance_ids, &az, config.max_wait).await {
+        Ok(inst) => inst,
+        Err(e) => {
+            warn!(error = %e, "instances failed to reach running state, cleaning up");
+            let env = TestEnv {
+                instances: Vec::new(),
+                security_group_id: sg_id,
+                ec2: ec2.clone(),
+                instance_ids,
+            };
+            env.cleanup().await;
+            return Err(e.context("instances did not reach running state"));
+        }
+    };
     info!(count = instances.len(), "all instances running with IPs");
 
     Ok(TestEnv {
         instances,
         security_group_id: sg_id,
         ec2: ec2.clone(),
-        instance_ids,
+        instance_ids: instance_ids.clone(),
     })
 }
 
@@ -340,7 +359,9 @@ async fn launch_instances(
         )
         .send()
         .await
-        .context("RunInstances failed")?;
+        .with_context(|| format!(
+            "RunInstances failed (ami={ami_id}, type={instance_type}, subnet={subnet_id}, sg={sg_id})"
+        ))?;
 
     let ids: Vec<String> = resp
         .instances()
