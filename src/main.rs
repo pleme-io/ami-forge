@@ -1,6 +1,7 @@
 mod aws;
 mod boot_check;
 mod build;
+mod cluster_test;
 mod manifest;
 mod pipeline;
 mod promote;
@@ -48,6 +49,9 @@ enum Command {
 
     /// Run the full AMI pipeline: build → test → promote (or rollback)
     PipelineRun(pipeline::PipelineRunArgs),
+
+    /// Multi-node cluster integration test: 2 instances, VPN peering, K3s cluster
+    ClusterTest(cluster_test::ClusterTestArgs),
 }
 
 #[tokio::main]
@@ -69,5 +73,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Status(args) => status::run(args).await,
         Command::Trigger(args) => trigger::run(args).await,
         Command::PipelineRun(args) => pipeline::run(args).await,
+        Command::ClusterTest(args) => cluster_test::run(args).await,
     }
 }
