@@ -16,6 +16,18 @@ pub async fn load_config(region: &str) -> SdkConfig {
         .await
 }
 
+/// Load AWS SDK config with an explicit SSO profile.
+///
+/// Uses the named profile for credential resolution — no env vars needed.
+pub async fn load_config_with_profile(region: &str, profile: &str) -> SdkConfig {
+    let region = aws_config::Region::new(region.to_owned());
+    aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(region)
+        .profile_name(profile)
+        .load()
+        .await
+}
+
 /// Update an SSM parameter with a string value.
 pub async fn put_ssm_parameter(
     ssm: &aws_sdk_ssm::Client,
