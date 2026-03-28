@@ -107,6 +107,16 @@ impl Default for TestGate {
     }
 }
 
+impl PipelineConfig {
+    /// Load AWS config using the profile from pipeline config if specified.
+    async fn aws_config(&self) -> aws_config::SdkConfig {
+        match &self.aws_profile {
+            Some(profile) => aws::load_config_with_profile(&self.region, profile).await,
+            None => aws::load_config(&self.region).await,
+        }
+    }
+}
+
 fn default_region() -> String { "us-east-1".to_string() }
 fn default_ssh_user() -> String { "root".to_string() }
 fn default_instance_type() -> String { "t3.medium".to_string() }
@@ -117,13 +127,6 @@ pub async fn run(args: PipelineArgs) -> anyhow::Result<()> {
         .with_context(|| format!("failed to read pipeline config: {}", args.config))?;
     let config: PipelineConfig = serde_json::from_str(&config_str)
         .with_context(|| format!("failed to parse pipeline config: {}", args.config))?;
-
-    // Set AWS_PROFILE if specified in config
-    if let Some(ref profile) = config.aws_profile {
-        // SAFETY: single-threaded at this point (before any async work or threads)
-        unsafe { std::env::set_var("AWS_PROFILE", profile); }
-        info!(profile = %profile, "AWS_PROFILE set from pipeline config");
-    }
 
     info!(
         template = %config.template,
@@ -154,7 +157,7 @@ pub async fn run(args: PipelineArgs) -> anyhow::Result<()> {
         if let Err(e) = run_tests(&config, &ami_id).await {
             // Deregister failed AMI
             info!(ami = %ami_id, "Tests FAILED — deregistering AMI");
-            let aws_config = aws::load_config(&config.region).await;
+            let aws_config = config.aws_config().await;
             let ec2 = aws_sdk_ec2::Client::new(&aws_config);
             rotate::run_rotate(&ec2, &ami_id).await.ok();
             std::fs::remove_file("packer-manifest.json").ok();
