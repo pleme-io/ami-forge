@@ -28,7 +28,7 @@ pub struct ClusterTestArgs {
     pub instance_type: String,
 
     /// Total timeout in seconds for the cluster to form
-    #[arg(long, default_value_t = 480)]
+    #[arg(long, default_value_t = 600)]
     pub timeout: u64,
 }
 
@@ -358,11 +358,13 @@ fn generate_cp_userdata(
                 "address": "10.99.0.1/24",
                 "private_key_file": "/run/secrets.d/vpn-private-key",
                 "listen_port": 51820,
+                "persistent_keepalive": 25,
                 "profile": "k8s-control-plane",
                 "peers": [{
                     "public_key": worker_pubkey,
                     "allowed_ips": ["10.99.0.0/24"],
-                    "preshared_key_file": "/run/secrets.d/vpn-psk"
+                    "preshared_key_file": "/run/secrets.d/vpn-psk",
+                    "persistent_keepalive": 25
                 }],
                 "firewall": {
                     "trust_interface": false,
@@ -408,7 +410,8 @@ fn generate_worker_userdata(
                     "public_key": cp_pubkey,
                     "allowed_ips": ["10.99.0.0/24"],
                     "preshared_key_file": "/run/secrets.d/vpn-psk",
-                    "endpoint": format!("{}:51820", cp_private_ip)
+                    "endpoint": format!("{}:51820", cp_private_ip),
+                    "persistent_keepalive": 25
                 }],
                 "firewall": {
                     "trust_interface": false,
