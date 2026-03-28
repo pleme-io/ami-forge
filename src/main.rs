@@ -3,6 +3,7 @@ mod boot_test;
 mod build;
 mod ec2_harness;
 mod packer;
+mod pipeline;
 mod rotate;
 mod ssh;
 mod status;
@@ -35,6 +36,9 @@ enum Command {
     /// Build AMI via Packer — runs packer build on a JSON template
     Packer(packer::PackerArgs),
 
+    /// JSON-driven pipeline: build, test, promote (config from Nix)
+    Pipeline(pipeline::PipelineArgs),
+
     /// Deregister an AMI by name and delete its orphaned EBS snapshots
     Rotate(rotate::RotateArgs),
 
@@ -62,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         Command::BootTest(args) => boot_test::run(args).await,
         Command::Build(args) => build::run(args).await,
         Command::Packer(args) => packer::run(args).await,
+        Command::Pipeline(args) => pipeline::run(args).await,
         Command::Rotate(args) => rotate::run(args).await,
         Command::Status(args) => status::run(args).await,
         Command::Trigger(args) => trigger::run(args).await,
