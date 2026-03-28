@@ -23,6 +23,7 @@ aws-sdk-ec2 = { version = "1", default-features = false, features = ["rustls", "
 aws-sdk-ec2instanceconnect = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-ssm = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-sdk-sts = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-codebuild = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 
 # Async runtime

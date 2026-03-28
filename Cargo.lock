@@ -28,6 +28,7 @@ dependencies = [
  "aws-sdk-ec2instanceconnect",
  "aws-sdk-s3",
  "aws-sdk-ssm",
+ "aws-sdk-sts",
  "base64",
  "bytesize",
  "clap",

@@ -191,6 +191,12 @@ rec {
             features = [ "rustls" "rt-tokio" ];
           }
           {
+            name = "aws-sdk-sts";
+            packageId = "aws-sdk-sts";
+            usesDefaultFeatures = false;
+            features = [ "rustls" "rt-tokio" ];
+          }
+          {
             name = "base64";
             packageId = "base64";
           }
@@ -1703,6 +1709,7 @@ rec {
           "rustls" = [ "aws-smithy-runtime/tls-rustls" ];
           "test-util" = [ "aws-credential-types/test-util" "aws-smithy-runtime/test-util" ];
         };
+        resolvedDefaultFeatures = [ "rt-tokio" "rustls" ];
       };
       "aws-sigv4" = rec {
         crateName = "aws-sigv4";
