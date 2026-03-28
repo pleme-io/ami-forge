@@ -6,15 +6,15 @@ use tracing::info;
 pub struct StatusArgs {
     /// SSM parameter to read current AMI ID
     #[arg(long)]
-    ssm: Option<String>,
+    pub ssm: Option<String>,
 
     /// Check AMI details by name
     #[arg(long)]
-    ami_name: Option<String>,
+    pub ami_name: Option<String>,
 
     /// AWS region
     #[arg(long, default_value = "us-east-1")]
-    region: String,
+    pub region: String,
 }
 
 /// Read a value from SSM Parameter Store.
