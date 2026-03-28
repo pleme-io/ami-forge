@@ -212,7 +212,7 @@ async fn resolve_network(
     let vpc = vpcs.vpcs().first().context("no default VPC found")?;
     let vpc_id = vpc.vpc_id().context("VPC missing vpc_id")?.to_string();
 
-    // Find a default subnet
+    // Find all default subnets, prefer AZs a-d (e/f often lack instance types)
     let subnets = ec2
         .describe_subnets()
         .filters(
@@ -231,8 +231,11 @@ async fn resolve_network(
         .await
         .context("DescribeSubnets (default VPC) failed")?;
 
-    let subnet = subnets
-        .subnets()
+    // Sort subnets by AZ name — a,b,c,d first (more likely to support all instance types)
+    let mut sorted: Vec<_> = subnets.subnets().to_vec();
+    sorted.sort_by_key(|s| s.availability_zone().unwrap_or("z").to_string());
+
+    let subnet = sorted
         .first()
         .context("no default subnet found")?;
     let subnet_id = subnet.subnet_id().context("subnet missing id")?.to_string();
@@ -241,6 +244,7 @@ async fn resolve_network(
         .context("subnet missing AZ")?
         .to_string();
 
+    info!(az = %az, "selected AZ (preferred earliest alphabetical)");
     Ok((vpc_id, subnet_id, az))
 }
 
