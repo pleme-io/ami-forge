@@ -69,20 +69,7 @@ pub async fn run(args: PackerArgs) -> anyhow::Result<()> {
     }
 
     // Parse manifest for AMI ID
-    info!("Parsing packer manifest...");
-    let manifest =
-        std::fs::read_to_string("packer-manifest.json").context("failed to read packer-manifest.json")?;
-    let manifest_json: serde_json::Value =
-        serde_json::from_str(&manifest).context("failed to parse packer-manifest.json")?;
-
-    let ami_id = manifest_json["builds"]
-        .as_array()
-        .and_then(|builds| builds.last())
-        .and_then(|build| build["artifact_id"].as_str())
-        .and_then(|artifact| artifact.split(':').nth(1))
-        .context("could not extract AMI ID from packer manifest")?;
-
-    info!("AMI created: {}", ami_id);
+    let ami_id = aws::parse_packer_manifest("packer-manifest.json")?;
 
     // Run boot test if requested
     if args.boot_test {
@@ -98,7 +85,7 @@ pub async fn run(args: PackerArgs) -> anyhow::Result<()> {
         };
 
         if let Err(e) = boot_test::run(test_args).await {
-            deregister_on_failure(&args.region, ami_id).await;
+            deregister_on_failure(&args.region, &ami_id).await;
             std::fs::remove_file("packer-manifest.json").ok();
             bail!("Boot test failed: {e}");
         }
@@ -118,7 +105,7 @@ pub async fn run(args: PackerArgs) -> anyhow::Result<()> {
         };
 
         if let Err(e) = vpn_test::run(test_args).await {
-            deregister_on_failure(&args.region, ami_id).await;
+            deregister_on_failure(&args.region, &ami_id).await;
             std::fs::remove_file("packer-manifest.json").ok();
             bail!("VPN test failed: {e}");
         }
@@ -128,12 +115,12 @@ pub async fn run(args: PackerArgs) -> anyhow::Result<()> {
     // Update SSM (only reached if all tests pass or no tests requested)
     let config = aws::load_config(&args.region).await;
     let ssm_client = aws_sdk_ssm::Client::new(&config);
-    aws::put_ssm_parameter(&ssm_client, &args.ssm, ami_id).await?;
+    aws::put_ssm_parameter(&ssm_client, &args.ssm, &ami_id).await?;
 
     // Cleanup manifest
     std::fs::remove_file("packer-manifest.json").ok();
 
-    info!("AMI {ami_id} promoted successfully");
+    info!(ami = %ami_id, "AMI promoted successfully");
     Ok(())
 }
 
