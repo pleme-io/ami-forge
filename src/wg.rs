@@ -3,6 +3,9 @@
 //! Pure Rust implementation using x25519-dalek for Curve25519 key pairs.
 //! Config generation produces wg-quick compatible INI strings with inline
 //! key values (not file paths) since test keys are ephemeral and in-memory.
+//!
+//! Currently used by the VPN test provisioner (future). Kept for reuse.
+#![allow(dead_code)]
 
 use base64::Engine;
 use x25519_dalek::{PublicKey, StaticSecret};

@@ -1,14 +1,11 @@
 mod aws;
-mod boot_test;
+mod boot_check;
 mod build;
-mod ec2_harness;
-mod packer;
-mod pipeline;
+mod manifest;
+mod promote;
 mod rotate;
-mod ssh;
 mod status;
 mod trigger;
-mod vpn_test;
 mod wg;
 
 use clap::{Parser, Subcommand};
@@ -17,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(
     name = "ami-forge",
-    about = "Rust CLI tool replacing shell scripts in the AMI build pipeline",
+    about = "AMI build pipeline tool — called by Packer provisioners and Nix apps",
     version
 )]
 struct Cli {
@@ -27,17 +24,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Boot-test an AMI: launch one instance, verify binaries and services
-    BootTest(boot_test::BootTestArgs),
+    /// Check binaries and services on the current machine (called by Packer)
+    BootCheck(boot_check::BootCheckArgs),
 
     /// Build an AMI from a nix disk image: upload, import, tag, and update SSM
     Build(build::BuildArgs),
 
-    /// Build AMI via Packer — runs packer build on a JSON template
-    Packer(packer::PackerArgs),
+    /// Parse packer-manifest.json and print AMI ID to stdout
+    ManifestId(manifest::ManifestIdArgs),
 
-    /// JSON-driven pipeline: build, test, promote (config from Nix)
-    Pipeline(pipeline::PipelineArgs),
+    /// Promote an AMI by updating SSM parameter
+    Promote(promote::PromoteArgs),
 
     /// Deregister an AMI by name and delete its orphaned EBS snapshots
     Rotate(rotate::RotateArgs),
@@ -47,9 +44,6 @@ enum Command {
 
     /// Start a `CodeBuild` build and optionally wait for completion
     Trigger(trigger::TriggerArgs),
-
-    /// Test VPN connectivity between two instances launched from an AMI
-    VpnTest(vpn_test::VpnTestArgs),
 }
 
 #[tokio::main]
@@ -63,13 +57,12 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::BootTest(args) => boot_test::run(args).await,
+        Command::BootCheck(args) => boot_check::run(args),
         Command::Build(args) => build::run(args).await,
-        Command::Packer(args) => packer::run(args).await,
-        Command::Pipeline(args) => pipeline::run(args).await,
+        Command::ManifestId(args) => manifest::run(args),
+        Command::Promote(args) => promote::run(args).await,
         Command::Rotate(args) => rotate::run(args).await,
         Command::Status(args) => status::run(args).await,
         Command::Trigger(args) => trigger::run(args).await,
-        Command::VpnTest(args) => vpn_test::run(args).await,
     }
 }
