@@ -47,11 +47,10 @@ fn find_image(dir: &Path) -> anyhow::Result<PathBuf> {
     let extensions = ["raw", "img", "vhd"];
 
     if dir.is_file() {
-        if let Some(ext) = dir.extension().and_then(|e| e.to_str()) {
-            if extensions.contains(&ext) {
+        if let Some(ext) = dir.extension().and_then(|e| e.to_str())
+            && extensions.contains(&ext) {
                 return Ok(dir.to_path_buf());
             }
-        }
         bail!(
             "Path {} is a file but not a recognized disk image (*.raw, *.img, *.vhd)",
             dir.display()
@@ -67,13 +66,11 @@ fn find_image(dir: &Path) -> anyhow::Result<PathBuf> {
     {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if extensions.contains(&ext) {
+        if path.is_file()
+            && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                && extensions.contains(&ext) {
                     return Ok(path);
                 }
-            }
-        }
     }
 
     // Search one level deeper (nix store outputs often nest)
@@ -84,13 +81,11 @@ fn find_image(dir: &Path) -> anyhow::Result<PathBuf> {
             for sub in std::fs::read_dir(&path)? {
                 let sub = sub?;
                 let sub_path = sub.path();
-                if sub_path.is_file() {
-                    if let Some(ext) = sub_path.extension().and_then(|e| e.to_str()) {
-                        if extensions.contains(&ext) {
+                if sub_path.is_file()
+                    && let Some(ext) = sub_path.extension().and_then(|e| e.to_str())
+                        && extensions.contains(&ext) {
                             return Ok(sub_path);
                         }
-                    }
-                }
             }
         }
     }
@@ -155,7 +150,7 @@ async fn import_image(
 ) -> anyhow::Result<String> {
     info!("Starting EC2 import-image from s3://{}/{}", bucket, key);
 
-    let format = if key.ends_with(".vhd") {
+    let format = if key.to_ascii_lowercase().ends_with(".vhd") {
         "VHD"
     } else {
         "RAW"
@@ -253,7 +248,7 @@ async fn poll_import(
             }
             "deleted" | "deleting" => {
                 pb.abandon_with_message("FAILED");
-                bail!("Import task {} was deleted: {}", task_id, status_msg);
+                bail!("Import task {task_id} was deleted: {status_msg}");
             }
             _ => {}
         }
@@ -305,27 +300,6 @@ async fn tag_ami(
     Ok(())
 }
 
-/// Update an SSM parameter with the new AMI ID.
-async fn update_ssm(
-    ssm_client: &aws_sdk_ssm::Client,
-    param: &str,
-    ami_id: &str,
-) -> anyhow::Result<()> {
-    info!("Updating SSM parameter {} = {}", param, ami_id);
-
-    ssm_client
-        .put_parameter()
-        .name(param)
-        .value(ami_id)
-        .r#type(aws_sdk_ssm::types::ParameterType::String)
-        .overwrite(true)
-        .send()
-        .await
-        .context("SSM PutParameter failed")?;
-
-    Ok(())
-}
-
 /// Delete the transit S3 object.
 async fn cleanup_s3(
     client: &aws_sdk_s3::Client,
@@ -352,12 +326,7 @@ pub async fn run(args: BuildArgs) -> anyhow::Result<()> {
     info!("Found disk image: {}", image_path.display());
 
     // Build AWS clients
-    let region = aws_config::Region::new(args.region.clone());
-    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(region)
-        .load()
-        .await;
-
+    let config = crate::aws::load_config(&args.region).await;
     let ec2_client = aws_sdk_ec2::Client::new(&config);
     let s3_client = aws_sdk_s3::Client::new(&config);
     let ssm_client = aws_sdk_ssm::Client::new(&config);
@@ -394,7 +363,7 @@ pub async fn run(args: BuildArgs) -> anyhow::Result<()> {
     tag_ami(&ec2_client, &ami_id, &args.ami_name).await?;
 
     // Step 7: Update SSM parameter
-    update_ssm(&ssm_client, &args.ssm, &ami_id).await?;
+    crate::aws::put_ssm_parameter(&ssm_client, &args.ssm, &ami_id).await?;
 
     // Step 8: Delete transit S3 artifact
     cleanup_s3(&s3_client, &args.bucket, &s3_key).await?;

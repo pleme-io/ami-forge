@@ -134,12 +134,7 @@ pub async fn run_rotate(client: &aws_sdk_ec2::Client, ami_name: &str) -> anyhow:
 
 /// Entry point for the `rotate` subcommand.
 pub async fn run(args: RotateArgs) -> anyhow::Result<()> {
-    let region = aws_config::Region::new(args.region);
-    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(region)
-        .load()
-        .await;
-
+    let config = crate::aws::load_config(&args.region).await;
     let ec2_client = aws_sdk_ec2::Client::new(&config);
 
     match run_rotate(&ec2_client, &args.ami_name).await {

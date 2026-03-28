@@ -94,15 +94,11 @@ fn print_ami_details(image: &aws_sdk_ec2::types::Image) {
     let ami_id = image.image_id().unwrap_or("unknown");
     let name = image.name().unwrap_or("(no name)");
     let state = image
-        .state()
-        .map(|s| s.as_str().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .state().map_or_else(|| "unknown".to_string(), |s| s.as_str().to_string());
     let creation = image.creation_date().unwrap_or("unknown");
     let description = image.description().unwrap_or("(no description)");
     let architecture = image
-        .architecture()
-        .map(|a| a.as_str().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .architecture().map_or_else(|| "unknown".to_string(), |a| a.as_str().to_string());
 
     println!("AMI Details:");
     println!("  ID:           {ami_id}");
@@ -145,12 +141,7 @@ pub async fn run(args: StatusArgs) -> anyhow::Result<()> {
         anyhow::bail!("At least one of --ssm or --ami-name is required");
     }
 
-    let region = aws_config::Region::new(args.region);
-    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(region)
-        .load()
-        .await;
-
+    let config = crate::aws::load_config(&args.region).await;
     let ec2_client = aws_sdk_ec2::Client::new(&config);
     let ssm_client = aws_sdk_ssm::Client::new(&config);
 
