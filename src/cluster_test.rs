@@ -269,12 +269,12 @@ async fn run_inner(
         error!("[FAIL] cp-wireguard: no interface");
     }
 
-    // Check K3s CP has at least 1 Ready node (CP itself)
+    // Check K3s 2-node cluster: CP (server) + worker (agent) both Ready
     total += 1;
     let k3s_ok = ssh_poll(
         &cp_public_ip,
         &key_file,
-        "kubectl get nodes --no-headers 2>/dev/null | grep -q Ready",
+        "test $(kubectl get nodes --no-headers 2>/dev/null | grep -c Ready) -ge 2",
         deadline,
         Duration::from_secs(10),
     )
@@ -287,9 +287,9 @@ async fn run_inner(
             "kubectl get nodes --no-headers",
         )
         .await;
-        info!("[PASS] k3s-cp-api: K3s API responding\n{node_info}");
+        info!("[PASS] k3s-cluster: 2 nodes Ready\n{node_info}");
     } else {
-        error!("[FAIL] k3s-cp-api: K3s not ready on CP");
+        error!("[FAIL] k3s-cluster: did not reach 2 Ready nodes");
         let node_info = ssh_output(
             &cp_public_ip,
             &key_file,
@@ -299,22 +299,8 @@ async fn run_inner(
         error!("K3s debug:\n{node_info}");
     }
 
-    // Check if worker joined (non-fatal — etcd HA join is fragile with 2 servers)
-    let worker_joined = ssh_check(
-        &cp_public_ip,
-        &key_file,
-        "test $(kubectl get nodes --no-headers 2>/dev/null | grep -c Ready) -ge 2",
-    )
-    .await;
-    if worker_joined {
-        info!("[INFO] k3s-worker-join: worker joined the cluster (bonus)");
-    } else {
-        warn!("[INFO] k3s-worker-join: worker hasn't joined yet (non-fatal, etcd HA join is slow)");
-    }
-
-    // Check VPN peering — verify WireGuard interface exists on CP and
-    // the tunnel endpoint is reachable. Handshake requires the worker to
-    // have sent traffic (persistent keepalive at 25s), so give it time.
+    // Check VPN peering — handshake between CP and worker.
+    // Worker has persistent_keepalive=25 so it sends within 25s.
     total += 1;
     let vpn_ok = ssh_poll(
         &cp_public_ip,
@@ -329,19 +315,9 @@ async fn run_inner(
         let wg_info = ssh_output(&cp_public_ip, &key_file, "wg show all").await;
         info!("[PASS] vpn-peering: WireGuard handshake established\n{wg_info}");
     } else {
-        // Fall back: check that at least the WG interface + peer are configured
-        let wg_configured = ssh_check(
-            &cp_public_ip,
-            &key_file,
-            "wg show all peers 2>/dev/null | grep -q .",
-        )
-        .await;
-        if wg_configured {
-            passed += 1;
-            warn!("[PASS] vpn-peering: WireGuard configured (no handshake yet, keepalive pending)");
-        } else {
-            error!("[FAIL] vpn-peering: no WireGuard peers configured");
-        }
+        error!("[FAIL] vpn-peering: no WireGuard handshake");
+        let wg_info = ssh_output(&cp_public_ip, &key_file, "wg show all 2>&1").await;
+        error!("WireGuard debug:\n{wg_info}");
     }
 
     // Check kubectl namespaces
@@ -422,7 +398,7 @@ fn generate_worker_userdata(
 ) -> String {
     serde_json::json!({
         "cluster_name": "cluster-test",
-        "role": "server",
+        "role": "agent",
         "distribution": "k3s",
         "cluster_init": false,
         "node_index": 1,
