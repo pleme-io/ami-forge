@@ -22,6 +22,7 @@ pub async fn load_config(region: &str) -> SdkConfig {
 /// Load AWS SDK config with an explicit SSO profile.
 ///
 /// Uses the named profile for credential resolution — no env vars needed.
+#[allow(dead_code)]
 pub async fn load_config_with_profile(region: &str, profile: &str) -> SdkConfig {
     let region = aws_config::Region::new(region.to_owned());
     aws_config::defaults(aws_config::BehaviorVersion::latest())
@@ -35,6 +36,7 @@ pub async fn load_config_with_profile(region: &str, profile: &str) -> SdkConfig 
 ///
 /// Call this early in the pipeline to catch expired SSO tokens before
 /// starting a 15-minute Packer build.
+#[allow(dead_code)]
 pub async fn validate_credentials(config: &SdkConfig) -> anyhow::Result<String> {
     let sts = aws_sdk_sts::Client::new(config);
     let resp = sts
