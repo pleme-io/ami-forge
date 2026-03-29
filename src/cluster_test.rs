@@ -501,15 +501,24 @@ async fn launch_instance(
         .parse()
         .unwrap_or(aws_sdk_ec2::types::InstanceType::T3Large);
 
+    // Use network_interfaces to ensure public IP assignment.
+    // When specifying network_interfaces, security groups go in the
+    // interface (not at the top level).
     let resp = ec2
         .run_instances()
         .image_id(ami_id)
         .instance_type(it)
         .key_name(keypair_name)
-        .security_group_ids(sg_id)
         .user_data(&userdata_b64)
         .min_count(1)
         .max_count(1)
+        .network_interfaces(
+            aws_sdk_ec2::types::InstanceNetworkInterfaceSpecification::builder()
+                .device_index(0)
+                .associate_public_ip_address(true)
+                .groups(sg_id)
+                .build(),
+        )
         .tag_specifications(
             aws_sdk_ec2::types::TagSpecification::builder()
                 .resource_type(aws_sdk_ec2::types::ResourceType::Instance)
@@ -535,7 +544,7 @@ async fn launch_instance(
         )
         .send()
         .await
-        .context("RunInstances failed")?;
+        .with_context(|| format!("RunInstances failed for ami={ami_id} type={instance_type}"))?;
 
     let id = resp
         .instances()
