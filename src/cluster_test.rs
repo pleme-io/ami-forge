@@ -378,13 +378,15 @@ async fn run_inner(
     }
 
     // Check 4: VPN handshakes (runs AFTER K3s wait — by now keepalives are established)
+    // Use `wg show all dump` which is machine-readable (tab-separated), and count
+    // peers with non-zero latest-handshake (field 6 in peer lines).
     total += 1;
     let min_hs = config.checks.min_vpn_handshakes;
     let vpn_ok = ssh_poll(
         &cp_public_ip,
         &key_file,
         &format!(
-            "test $(wg show all latest-handshakes 2>/dev/null | awk '{{if($3>0)c++}}END{{print c+0}}') -ge {min_hs}"
+            "test $(wg show all dump 2>/dev/null | awk -F'\\t' 'NF>4 && $6>0 {{c++}} END {{print c+0}}') -ge {min_hs}"
         ),
         deadline,
         Duration::from_secs(5),
@@ -413,19 +415,31 @@ async fn run_inner(
         error!("[FAIL] kubectl-cp: namespaces not accessible");
     }
 
-    // Check 6: kubectl from client node via CP's VPN IP (proves end-to-end VPN + API)
+    // Check 6: kubectl from client node via VPN
+    // Copy kubeconfig from CP, rewrite server URL to CP's VPN IP, then run kubectl
     if config.checks.kubectl_from_client {
         total += 1;
         let client_public_ip = &node_ips[client_index].1;
-        // Find the CP's VPN address from config (strip the /24 mask)
         let cp_vpn_full = config.nodes[cp_index].vpn_addr();
         let cp_vpn_ip = cp_vpn_full.split('/').next().unwrap_or("10.99.0.1");
+
+        // Copy kubeconfig from CP to client via SSH relay
+        let kubeconfig = ssh_output(&cp_public_ip, &key_file, "cat /etc/rancher/k3s/k3s.yaml 2>/dev/null").await;
+        if !kubeconfig.is_empty() {
+            // Write kubeconfig to client, rewriting server URL to CP's VPN IP
+            let rewritten = kubeconfig.replace("127.0.0.1", cp_vpn_ip).replace("localhost", cp_vpn_ip);
+            let escaped = rewritten.replace('\'', "'\\''");
+            let _ = ssh_check(
+                client_public_ip,
+                &key_file,
+                &format!("mkdir -p /root/.kube && echo '{escaped}' > /root/.kube/config"),
+            ).await;
+        }
+
         let client_kubectl_ok = ssh_poll(
             client_public_ip,
             &key_file,
-            &format!(
-                "kubectl --server https://{cp_vpn_ip}:6443 --insecure-skip-tls-verify get namespaces --no-headers 2>/dev/null | grep -q default"
-            ),
+            "kubectl get namespaces --no-headers 2>/dev/null | grep -q default",
             deadline,
             Duration::from_secs(10),
         ).await;
@@ -437,9 +451,7 @@ async fn run_inner(
             let client_debug = ssh_output(
                 client_public_ip,
                 &key_file,
-                &format!(
-                    "kubectl --server https://{cp_vpn_ip}:6443 --insecure-skip-tls-verify get namespaces 2>&1; echo '---'; wg show all 2>&1; echo '---'; journalctl -u kindling-init -n 10 --no-pager"
-                ),
+                "kubectl get namespaces 2>&1; echo '---'; wg show all 2>&1",
             ).await;
             error!("Client debug:\n{client_debug}");
         }
