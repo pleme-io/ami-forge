@@ -13,6 +13,7 @@ use clap::Args;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
 #[derive(Args)]
@@ -34,11 +35,25 @@ pub struct PipelineConfig {
     pub cluster_test: Option<ClusterTestRef>,
     #[serde(default = "default_manifest")]
     pub manifest: PathBuf,
+    #[serde(default)]
+    pub attic: Option<AtticConfig>,
 }
 
 #[derive(Deserialize)]
 pub struct ClusterTestRef {
     pub config: PathBuf,
+}
+
+#[derive(Deserialize)]
+pub struct AtticConfig {
+    /// SSM parameter storing the last-known-good Attic cache AMI ID.
+    pub ssm: String,
+    /// EC2 instance type for the ephemeral Attic cache server.
+    #[serde(default = "default_attic_instance_type")]
+    pub instance_type: String,
+    /// Attic cache name (path component in the substituter URL).
+    #[serde(default = "default_attic_cache_name")]
+    pub cache_name: String,
 }
 
 fn default_region() -> String {
@@ -47,6 +62,192 @@ fn default_region() -> String {
 fn default_manifest() -> PathBuf {
     PathBuf::from("packer-manifest.json")
 }
+fn default_attic_instance_type() -> String {
+    "t3.medium".into()
+}
+fn default_attic_cache_name() -> String {
+    "nexus".into()
+}
+
+// ---------------------------------------------------------------------------
+// Attic ephemeral cache lifecycle
+// ---------------------------------------------------------------------------
+
+/// Boot an Attic cache instance from the last-known-good AMI.
+///
+/// Returns `(instance_id, private_ip)`.
+async fn attic_boot(
+    ec2: &aws_sdk_ec2::Client,
+    ssm: &aws_sdk_ssm::Client,
+    config: &AtticConfig,
+) -> Result<(String, String)> {
+    // 1. Resolve Attic AMI ID from SSM
+    let ami_id = ssm
+        .get_parameter()
+        .name(&config.ssm)
+        .send()
+        .await
+        .context("failed to read Attic AMI from SSM")?
+        .parameter()
+        .and_then(|p| p.value().map(String::from))
+        .context("SSM parameter for Attic AMI has no value")?;
+
+    info!("Booting Attic cache from AMI {ami_id}");
+
+    // 2. Launch instance
+    let resp = ec2
+        .run_instances()
+        .image_id(&ami_id)
+        .instance_type(aws_sdk_ec2::types::InstanceType::from(
+            config.instance_type.as_str(),
+        ))
+        .min_count(1)
+        .max_count(1)
+        .tag_specifications(
+            aws_sdk_ec2::types::TagSpecification::builder()
+                .resource_type(aws_sdk_ec2::types::ResourceType::Instance)
+                .tags(
+                    aws_sdk_ec2::types::Tag::builder()
+                        .key("Name")
+                        .value("ami-forge-attic-cache")
+                        .build(),
+                )
+                .tags(
+                    aws_sdk_ec2::types::Tag::builder()
+                        .key("ManagedBy")
+                        .value("ami-forge")
+                        .build(),
+                )
+                .build(),
+        )
+        .send()
+        .await
+        .context("failed to launch Attic instance")?;
+
+    let instance_id = resp
+        .instances()
+        .first()
+        .and_then(|i| i.instance_id())
+        .context("no instance ID in launch response")?
+        .to_string();
+
+    info!("Attic instance launched: {instance_id}");
+
+    // 3. Poll for private IP (instance must be running)
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if Instant::now() > deadline {
+            bail!("Attic instance {instance_id} did not get a private IP within 120s");
+        }
+        let desc = ec2
+            .describe_instances()
+            .instance_ids(&instance_id)
+            .send()
+            .await?;
+        if let Some(ip) = desc
+            .reservations()
+            .first()
+            .and_then(|r| r.instances().first())
+            .and_then(|i| i.private_ip_address())
+        {
+            info!("Attic instance {instance_id} ready at {ip}");
+            return Ok((instance_id, ip.to_string()));
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+/// Wait for the Attic HTTP service to become healthy (port 8080).
+///
+/// Accepts either a 200-level response or 404 (Attic returns 404 on `/`
+/// when the cache is empty but the service is healthy).
+async fn attic_wait_healthy(ip: &str, timeout_secs: u64) -> Result<()> {
+    let url = format!("http://{ip}:8080/");
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+
+    loop {
+        if Instant::now() > deadline {
+            bail!("Attic service at {url} not healthy after {timeout_secs}s");
+        }
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 404 => {
+                info!("Attic service healthy at {url}");
+                return Ok(());
+            }
+            _ => {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        }
+    }
+}
+
+/// Snapshot the Attic instance as a new AMI and promote to SSM.
+///
+/// Called unconditionally after the build phase — even when tests fail the
+/// cache still contains new nars that speed up the next build.
+async fn attic_snapshot(
+    ec2: &aws_sdk_ec2::Client,
+    ssm_client: &aws_sdk_ssm::Client,
+    instance_id: &str,
+    ssm_param: &str,
+) -> Result<()> {
+    info!("Snapshotting Attic instance {instance_id}");
+
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let resp = ec2
+        .create_image()
+        .instance_id(instance_id)
+        .name(format!("attic-cache-{ts}"))
+        .description("Ephemeral Attic binary cache — auto-generated by ami-forge")
+        .no_reboot(false)
+        .send()
+        .await
+        .context("failed to create Attic AMI")?;
+
+    let ami_id = resp
+        .image_id()
+        .context("no AMI ID in create_image response")?;
+    info!("Attic AMI created: {ami_id}, waiting for availability...");
+
+    // Wait for AMI to become available
+    let deadline = Instant::now() + Duration::from_secs(600);
+    loop {
+        if Instant::now() > deadline {
+            bail!("Attic AMI {ami_id} did not become available within 600s");
+        }
+        let desc = ec2.describe_images().image_ids(ami_id).send().await?;
+        if let Some(state) = desc.images().first().and_then(|i| i.state()) {
+            if state.as_str() == "available" {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+
+    // Promote new Attic AMI to SSM
+    crate::aws::put_ssm_parameter(ssm_client, ssm_param, ami_id).await?;
+    info!("Attic AMI {ami_id} promoted to {ssm_param}");
+
+    Ok(())
+}
+
+/// Terminate the ephemeral Attic instance.
+async fn attic_teardown(ec2: &aws_sdk_ec2::Client, instance_id: &str) -> Result<()> {
+    info!("Terminating Attic instance {instance_id}");
+    ec2.terminate_instances()
+        .instance_ids(instance_id)
+        .send()
+        .await
+        .context("failed to terminate Attic instance")?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline orchestrator
+// ---------------------------------------------------------------------------
 
 pub async fn run(args: PipelineRunArgs) -> Result<()> {
     let config_content = std::fs::read_to_string(&args.config)
@@ -75,6 +276,58 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
     let arn = crate::aws::validate_credentials(&aws_config).await?;
     info!("Pipeline starting as {arn}");
 
+    // ── Attic ephemeral cache (optional) ────────────────────────
+    let mut attic_instance: Option<(String, String)> = None;
+    if let Some(ref attic_cfg) = config.attic {
+        info!("[attic] Booting ephemeral cache from {}", attic_cfg.ssm);
+        let ec2_client = aws_sdk_ec2::Client::new(&aws_config);
+        let ssm_client = aws_sdk_ssm::Client::new(&aws_config);
+        match attic_boot(&ec2_client, &ssm_client, attic_cfg).await {
+            Ok((id, ip)) => match attic_wait_healthy(&ip, 180).await {
+                Ok(()) => {
+                    attic_instance = Some((id, ip));
+                }
+                Err(e) => {
+                    warn!("[attic] Health check failed (degrading without cache): {e:#}");
+                    if let Err(te) = attic_teardown(&ec2_client, &id).await {
+                        warn!("[attic] Teardown of unhealthy instance also failed: {te:#}");
+                    }
+                }
+            },
+            Err(e) => {
+                warn!("[attic] Boot failed (degrading without cache): {e:#}");
+            }
+        }
+    }
+
+    // Run the pipeline phases, capturing the result so Attic cleanup always runs.
+    let pipeline_result =
+        run_pipeline_phases(&config, &aws_config, &attic_instance, total_phases).await;
+
+    // ── Attic snapshot + teardown (ALWAYS — cache grows richer) ─
+    if let Some((ref id, _)) = attic_instance {
+        let attic_cfg = config.attic.as_ref().expect("attic_instance set implies config.attic is Some");
+        let ec2_client = aws_sdk_ec2::Client::new(&aws_config);
+        let ssm_client = aws_sdk_ssm::Client::new(&aws_config);
+        if let Err(e) = attic_snapshot(&ec2_client, &ssm_client, id, &attic_cfg.ssm).await {
+            warn!("[attic] Snapshot failed (non-fatal): {e:#}");
+        }
+        if let Err(e) = attic_teardown(&ec2_client, id).await {
+            warn!("[attic] Teardown failed: {e:#}");
+        }
+    }
+
+    pipeline_result
+}
+
+/// Inner pipeline phases, factored out so Attic cleanup always runs regardless
+/// of success or failure.
+async fn run_pipeline_phases(
+    config: &PipelineConfig,
+    aws_config: &aws_config::SdkConfig,
+    attic_instance: &Option<(String, String)>,
+    total_phases: usize,
+) -> Result<()> {
     let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
     let build_tpl = config.build_template.to_string_lossy();
     let test_tpl = config.test_template.to_string_lossy();
@@ -83,7 +336,18 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
     // ── Phase 1: Build AMI ──────────────────────────────────────
     info!("[1/{total_phases}] Building AMI from base NixOS image");
     run_packer_init(&build_tpl)?;
-    run_packer_build(&build_tpl, &[format!("github_token={github_token}")])?;
+
+    let mut build_vars = vec![format!("github_token={github_token}")];
+    if let Some((_, ref ip)) = *attic_instance {
+        let cache_name = &config
+            .attic
+            .as_ref()
+            .expect("attic_instance set implies config.attic is Some")
+            .cache_name;
+        build_vars.push(format!("attic_url=http://{ip}:8080/{cache_name}"));
+        info!("[attic] Passing substituter URL to Packer build");
+    }
+    run_packer_build(&build_tpl, &build_vars)?;
 
     // ── Phase 2: Extract AMI ID ─────────────────────────────────
     info!("[2/{total_phases}] Extracting AMI ID from manifest");
@@ -97,7 +361,7 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
 
     if let Err(e) = test_result {
         error!("Single-node test FAILED: {e:#}");
-        deregister_and_fail(&aws_config, &config.ami_name, &manifest_path, &ami_id).await?;
+        deregister_and_fail(aws_config, &config.ami_name, &manifest_path, &ami_id).await?;
     }
 
     // ── Phase 4: Multi-node cluster test ────────────────────────
@@ -109,14 +373,14 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
         };
         if let Err(e) = crate::cluster_test::run(cluster_args).await {
             error!("Cluster test FAILED: {e:#}");
-            deregister_and_fail(&aws_config, &config.ami_name, &manifest_path, &ami_id).await?;
+            deregister_and_fail(aws_config, &config.ami_name, &manifest_path, &ami_id).await?;
         }
     }
 
     // ── Phase 5: Promote ────────────────────────────────────────
     let promote_phase = if config.cluster_test.is_none() { 4 } else { 5 };
     info!("[{promote_phase}/{total_phases}] Promoting AMI {ami_id} to {}", config.ssm);
-    let ssm_client = aws_sdk_ssm::Client::new(&aws_config);
+    let ssm_client = aws_sdk_ssm::Client::new(aws_config);
     crate::aws::put_ssm_parameter(&ssm_client, &config.ssm, &ami_id).await?;
 
     cleanup_manifest(&manifest_path);
