@@ -194,6 +194,7 @@ impl SshSession {
 // Individual check functions (return CheckResult)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 async fn check_cp_kindling_init(cp: &SshSession, deadline: Instant) -> CheckResult {
     let start = Instant::now();
     let ok = cp.poll(
@@ -395,6 +396,8 @@ struct TestResources {
     sg_id: Option<String>,
     instance_ids: Vec<String>,
     key_file: Option<PathBuf>,
+    profile_name: Option<String>,
+    role_name: Option<String>,
 }
 
 impl TestResources {
@@ -404,6 +407,8 @@ impl TestResources {
             sg_id: None,
             instance_ids: Vec::new(),
             key_file: None,
+            profile_name: None,
+            role_name: None,
         }
     }
 }
@@ -422,16 +427,17 @@ pub async fn run(args: ClusterTestArgs) -> Result<()> {
     let ec2 = aws_sdk_ec2::Client::new(&aws_config);
 
     let mut resources = TestResources::new();
-    let result = run_inner(&ec2, &args, &config, &mut resources).await;
+    let result = run_inner(&ec2, &aws_config, &args, &config, &mut resources).await;
 
     // Always cleanup, even on failure
-    cleanup(&ec2, &resources).await;
+    cleanup(&ec2, &aws_config, &resources).await;
 
     result
 }
 
 async fn run_inner(
     ec2: &aws_sdk_ec2::Client,
+    aws_config: &aws_config::SdkConfig,
     args: &ClusterTestArgs,
     config: &ClusterTestConfig,
     res: &mut TestResources,
@@ -562,6 +568,57 @@ async fn run_inner(
         .await
         .context("authorize_security_group_ingress (ssh) failed")?;
 
+    // 3b. Create IAM role + instance profile (allows ec2:CreateTags on self)
+    info!("Creating IAM instance profile for tag-based bootstrap polling");
+    let iam = aws_sdk_iam::Client::new(aws_config);
+    let role_name = format!("ami-forge-test-{}", test_id);
+    let profile_name = role_name.clone();
+
+    iam.create_role()
+        .role_name(&role_name)
+        .assume_role_policy_document(
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#,
+        )
+        .tags(
+            aws_sdk_iam::types::Tag::builder()
+                .key("ManagedBy")
+                .value("ami-forge")
+                .build()
+                .context("failed to build IAM tag")?,
+        )
+        .send()
+        .await
+        .context("IAM CreateRole failed")?;
+    res.role_name = Some(role_name.clone());
+
+    iam.put_role_policy()
+        .role_name(&role_name)
+        .policy_name("tag-self")
+        .policy_document(
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:CreateTags","Resource":"*","Condition":{"StringEquals":{"ec2:ResourceTag/ManagedBy":"ami-forge"}}}]}"#,
+        )
+        .send()
+        .await
+        .context("IAM PutRolePolicy failed")?;
+
+    iam.create_instance_profile()
+        .instance_profile_name(&profile_name)
+        .send()
+        .await
+        .context("IAM CreateInstanceProfile failed")?;
+    res.profile_name = Some(profile_name.clone());
+
+    iam.add_role_to_instance_profile()
+        .instance_profile_name(&profile_name)
+        .role_name(&role_name)
+        .send()
+        .await
+        .context("IAM AddRoleToInstanceProfile failed")?;
+
+    // IAM is eventually consistent — wait for propagation
+    info!("Waiting 10s for IAM propagation");
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
     // 4. Launch CP instance first (others need its IP)
     let role_summary: Vec<_> = config.nodes.iter().map(|n| format!("{} ({})", n.name, n.role)).collect();
     info!("[cluster-test:4/7] Launching {node_count}-node cluster: {}", role_summary.join(", "));
@@ -586,6 +643,7 @@ async fn run_inner(
     let cp_id = launch_instance(
         ec2, &args.ami_id, &cp_userdata, &keypair_name, &sg_id,
         &config.instance_type, &test_id, &cp_node.name, &cp_node.role,
+        &profile_name,
     ).await?;
     res.instance_ids.push(cp_id.clone());
 
@@ -620,6 +678,7 @@ async fn run_inner(
         let id = launch_instance(
             ec2, &args.ami_id, &userdata, &keypair_name, &sg_id,
             &config.instance_type, &test_id, &node.name, &node.role,
+            &profile_name,
         ).await?;
         res.instance_ids.push(id.clone());
         pending.push((i, node.name.clone(), id));
@@ -654,8 +713,28 @@ async fn run_inner(
     info!("[cluster-test:7/7] Running cluster validation");
     let mut results: Vec<CheckResult> = Vec::new();
 
-    // Check 1: kindling-init completed on CP
-    results.push(check_cp_kindling_init(&cp_ssh, deadline).await);
+    // Check 1: Wait for ALL nodes to complete bootstrap via EC2 tags
+    info!("Waiting for all nodes to complete bootstrap (via EC2 tags)...");
+    let phase_start = Instant::now();
+    match wait_for_phase_tags(ec2, &res.instance_ids, "complete", deadline).await {
+        Ok(()) => {
+            info!("[PASS] All nodes reached bootstrap phase 'complete'");
+            results.push(CheckResult::pass(
+                "bootstrap-phase-tags",
+                format!("all {} nodes completed", res.instance_ids.len()),
+                phase_start,
+            ));
+        }
+        Err(e) => {
+            error!("[FAIL] Tag-based bootstrap polling: {e}");
+            results.push(CheckResult::fail(
+                "bootstrap-phase-tags",
+                format!("{e}"),
+                phase_start,
+                None,
+            ));
+        }
+    }
 
     // Check 2: WireGuard on CP has peers
     results.push(check_cp_wireguard(&cp_ssh).await);
@@ -686,6 +765,58 @@ async fn run_inner(
         Ok(())
     } else {
         bail!("{}/{total} cluster integration checks failed", total - passed);
+    }
+}
+
+/// Poll EC2 tags until all instances have the expected `BootstrapPhase` tag.
+///
+/// Kindling-init writes `BootstrapPhase` tags on the instances as it progresses.
+/// This function replaces SSH-based polling for init completion, which is fragile
+/// and requires network access to each node.
+async fn wait_for_phase_tags(
+    ec2: &aws_sdk_ec2::Client,
+    instance_ids: &[String],
+    target_phase: &str,
+    deadline: Instant,
+) -> Result<()> {
+    loop {
+        if Instant::now() >= deadline {
+            bail!("Timed out waiting for all nodes to reach phase '{target_phase}'");
+        }
+
+        let resp = ec2
+            .describe_instances()
+            .set_instance_ids(Some(instance_ids.to_vec()))
+            .send()
+            .await
+            .context("DescribeInstances for tag polling failed")?;
+
+        let mut ready_count = 0;
+        for reservation in resp.reservations() {
+            for instance in reservation.instances() {
+                if let Some(phase) = instance
+                    .tags()
+                    .iter()
+                    .find(|t| t.key() == Some("BootstrapPhase"))
+                    .and_then(|t| t.value())
+                {
+                    if phase == target_phase {
+                        ready_count += 1;
+                    }
+                }
+            }
+        }
+
+        info!(
+            "Phase poll: {ready_count}/{} nodes at '{target_phase}'",
+            instance_ids.len()
+        );
+
+        if ready_count >= instance_ids.len() {
+            return Ok(());
+        }
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
 
@@ -778,6 +909,7 @@ async fn launch_instance(
     test_id: &str,
     node_name: &str,
     node_role: &str,
+    iam_profile_name: &str,
 ) -> Result<String> {
     use base64::Engine;
     let userdata_b64 = base64::engine::general_purpose::STANDARD.encode(userdata);
@@ -794,6 +926,11 @@ async fn launch_instance(
         .image_id(ami_id)
         .instance_type(it)
         .key_name(keypair_name)
+        .iam_instance_profile(
+            aws_sdk_ec2::types::IamInstanceProfileSpecification::builder()
+                .name(iam_profile_name)
+                .build(),
+        )
         .user_data(&userdata_b64)
         .min_count(1)
         .max_count(1)
@@ -893,7 +1030,7 @@ async fn wait_for_ips(
     }
 }
 
-async fn cleanup(ec2: &aws_sdk_ec2::Client, res: &TestResources) {
+async fn cleanup(ec2: &aws_sdk_ec2::Client, aws_config: &aws_config::SdkConfig, res: &TestResources) {
     info!("Cleaning up cluster test resources");
 
     // Terminate instances
@@ -964,6 +1101,32 @@ async fn cleanup(ec2: &aws_sdk_ec2::Client, res: &TestResources) {
     if let Some(ref kp) = res.keypair_name {
         info!("Deleting keypair: {kp}");
         let _ = ec2.delete_key_pair().key_name(kp).send().await;
+    }
+
+    // Delete IAM instance profile + role
+    if let Some(ref profile) = res.profile_name {
+        let iam = aws_sdk_iam::Client::new(aws_config);
+        // Role name may differ from profile name in theory, but we use the same
+        let role = res.role_name.as_deref().unwrap_or(profile);
+        let _ = iam
+            .remove_role_from_instance_profile()
+            .instance_profile_name(profile)
+            .role_name(role)
+            .send()
+            .await;
+        let _ = iam
+            .delete_instance_profile()
+            .instance_profile_name(profile)
+            .send()
+            .await;
+        let _ = iam
+            .delete_role_policy()
+            .role_name(role)
+            .policy_name("tag-self")
+            .send()
+            .await;
+        let _ = iam.delete_role().role_name(role).send().await;
+        info!("Deleted IAM instance profile and role: {profile}");
     }
 
     // Delete temp key file

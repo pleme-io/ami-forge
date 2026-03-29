@@ -173,6 +173,12 @@ rec {
             features = [ "rustls" "rt-tokio" ];
           }
           {
+            name = "aws-sdk-iam";
+            packageId = "aws-sdk-iam";
+            usesDefaultFeatures = false;
+            features = [ "rustls" "rt-tokio" ];
+          }
+          {
             name = "aws-sdk-s3";
             packageId = "aws-sdk-s3";
             usesDefaultFeatures = false;
@@ -890,6 +896,131 @@ rec {
         edition = "2021";
         sha256 = "0mqkdzklaamjm3m7mfiqf80wbmfhgm8vb99fqr8rqm8f1983xa43";
         libName = "aws_sdk_ec2";
+        authors = [
+          "AWS Rust SDK Team <aws-sdk-rust@amazon.com>"
+          "Russell Cohen <rcoh@amazon.com>"
+        ];
+        dependencies = [
+          {
+            name = "aws-credential-types";
+            packageId = "aws-credential-types";
+          }
+          {
+            name = "aws-runtime";
+            packageId = "aws-runtime";
+          }
+          {
+            name = "aws-smithy-async";
+            packageId = "aws-smithy-async";
+          }
+          {
+            name = "aws-smithy-http";
+            packageId = "aws-smithy-http";
+          }
+          {
+            name = "aws-smithy-json";
+            packageId = "aws-smithy-json";
+          }
+          {
+            name = "aws-smithy-observability";
+            packageId = "aws-smithy-observability";
+          }
+          {
+            name = "aws-smithy-query";
+            packageId = "aws-smithy-query";
+          }
+          {
+            name = "aws-smithy-runtime";
+            packageId = "aws-smithy-runtime";
+            features = [ "client" ];
+          }
+          {
+            name = "aws-smithy-runtime-api";
+            packageId = "aws-smithy-runtime-api";
+            features = [ "client" "http-1x" ];
+          }
+          {
+            name = "aws-smithy-types";
+            packageId = "aws-smithy-types";
+            features = [ "http-body-1-x" ];
+          }
+          {
+            name = "aws-smithy-xml";
+            packageId = "aws-smithy-xml";
+          }
+          {
+            name = "aws-types";
+            packageId = "aws-types";
+          }
+          {
+            name = "fastrand";
+            packageId = "fastrand";
+          }
+          {
+            name = "http";
+            packageId = "http 0.2.12";
+          }
+          {
+            name = "http";
+            packageId = "http 1.4.0";
+            rename = "http-1x";
+          }
+          {
+            name = "regex-lite";
+            packageId = "regex-lite";
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "aws-credential-types";
+            packageId = "aws-credential-types";
+            features = [ "test-util" ];
+          }
+          {
+            name = "aws-runtime";
+            packageId = "aws-runtime";
+            features = [ "test-util" ];
+          }
+          {
+            name = "aws-smithy-async";
+            packageId = "aws-smithy-async";
+            features = [ "test-util" ];
+          }
+          {
+            name = "aws-smithy-runtime";
+            packageId = "aws-smithy-runtime";
+            features = [ "test-util" ];
+          }
+          {
+            name = "aws-smithy-runtime-api";
+            packageId = "aws-smithy-runtime-api";
+            features = [ "test-util" ];
+          }
+          {
+            name = "aws-smithy-types";
+            packageId = "aws-smithy-types";
+            features = [ "http-body-1-x" "test-util" ];
+          }
+        ];
+        features = {
+          "default" = [ "rustls" "default-https-client" "rt-tokio" ];
+          "default-https-client" = [ "aws-smithy-runtime/default-https-client" ];
+          "rt-tokio" = [ "aws-smithy-async/rt-tokio" "aws-smithy-types/rt-tokio" ];
+          "rustls" = [ "aws-smithy-runtime/tls-rustls" ];
+          "test-util" = [ "aws-credential-types/test-util" "aws-smithy-runtime/test-util" ];
+        };
+        resolvedDefaultFeatures = [ "rt-tokio" "rustls" ];
+      };
+      "aws-sdk-iam" = rec {
+        crateName = "aws-sdk-iam";
+        version = "1.103.0";
+        edition = "2021";
+        sha256 = "0ns0grzbpv5ys5mm5d5firphphlk73rgw3vlgpxk72mf56mhy2g6";
+        libName = "aws_sdk_iam";
         authors = [
           "AWS Rust SDK Team <aws-sdk-rust@amazon.com>"
           "Russell Cohen <rcoh@amazon.com>"

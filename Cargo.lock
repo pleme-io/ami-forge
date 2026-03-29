@@ -25,6 +25,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-codebuild",
  "aws-sdk-ec2",
+ "aws-sdk-iam",
  "aws-sdk-s3",
  "aws-sdk-ssm",
  "aws-sdk-sts",
@@ -230,6 +231,31 @@ name = "aws-sdk-ec2"
 version = "1.208.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83a83e500a0e559c51c62ea5b5517dd0d5c5017238ba7aeaa8b22a45e76f1357"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-iam"
+version = "1.103.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6090fab29ae8a33fb7d740ffef23893c20b6f8eaeb4526bd1beecbb7e7e405b"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",

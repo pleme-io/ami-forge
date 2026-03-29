@@ -24,6 +24,7 @@ aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "r
 aws-sdk-ssm = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-sts = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-codebuild = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-sdk-iam = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
