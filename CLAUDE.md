@@ -10,7 +10,7 @@ Rust CLI, all orchestration logic, no shell scripts.
 | Command | Called by | Purpose |
 |---------|-----------|---------|
 | `pipeline-run` | `nix run .#ami-build` | Full pipeline: build, extract, single-node test, cluster test, promote |
-| `cluster-test` | `pipeline-run` | 2-node EC2 integration test: VPN peering + K3s cluster + kubectl |
+| `cluster-test` | `pipeline-run` | N-node EC2 integration test (YAML config): VPN peering + K3s cluster + kubectl |
 | `boot-check` | Packer provisioner | Validate binaries and services on a running instance |
 | `build` | Manual/CI | Upload nix disk image, import as AMI, tag, update SSM |
 | `manifest-id` | `pipeline-run` | Parse packer-manifest.json, print AMI ID to stdout |
@@ -27,7 +27,7 @@ Rust CLI, all orchestration logic, no shell scripts.
 Phase 1: packer build (base NixOS → nixos-rebuild → kindling ami-build → snapshot)
 Phase 2: Extract AMI ID from packer-manifest.json
 Phase 3: packer build test template (boot AMI with test userdata → kindling ami-integration-test)
-Phase 4: cluster-test (2 EC2 instances, VPN peering, K3s 2-node, kubectl) [skippable]
+Phase 4: cluster-test (N EC2 instances from YAML config, VPN peering, K3s, kubectl) [optional]
 Phase 5: Promote AMI to SSM parameter
 ```
 
@@ -38,22 +38,56 @@ and the pipeline exits non-zero. No bad AMIs reach production.
 
 ## Cluster Test (`cluster-test`)
 
-Launches 2 EC2 instances from the built AMI with cross-referenced WireGuard keys:
+Config-driven N-node test. Node topology is defined in a YAML file (`--config`),
+not hardcoded in Rust. The CLI takes `--config <path>` and `--ami-id <id>`.
 
-1. Generate ephemeral WireGuard keypairs + PSK (x25519-dalek)
+**Config format** (`ClusterTestConfig`):
+```yaml
+cluster_name: cluster-test
+instance_type: c7i.xlarge
+timeout: 600
+k3s_token: ami-forge-cluster-test-token
+region: us-east-1  # optional, defaults to us-east-1
+nodes:
+  - name: cp
+    role: server
+    cluster_init: true
+    vpn_address: "10.99.0.1/24"
+    node_index: 0
+  - name: worker1
+    role: agent
+    cluster_init: false
+    vpn_address: "10.99.0.2/24"
+    node_index: 1
+checks:
+  min_ready_nodes: 2
+  min_vpn_handshakes: 1
+  kubectl_from_client: false
+```
+
+**Pipeline integration** -- `pipeline-run` config uses optional `cluster_test.config`
+reference instead of `skip_cluster_test` bool:
+```yaml
+cluster_test:
+  config: /path/to/cluster-test.yaml
+```
+
+**Execution flow**:
+1. Read YAML config, generate ephemeral WireGuard keypairs + PSK (x25519-dalek)
 2. Create temporary EC2 keypair and security group
-3. Launch CP instance with server userdata (`cluster_init: true`, `node_index: 0`)
-4. Wait for CP IPs, launch worker (`cluster_init: false`, `node_index: 1`, `join_server: CP`)
-5. Wait for SSH on CP
-6. Validate via SSH polling:
+3. Launch CP instance (the node with `cluster_init: true`)
+4. Wait for CP IPs, launch remaining nodes with CP's IP injected
+5. Wait for SSH on CP (and client node if `kubectl_from_client: true`)
+6. Validate via SSH polling (driven by `checks` config):
    - `kindling-init.service` completed
    - WireGuard interface configured
-   - K3s 2-node cluster (2+ nodes Ready)
-   - VPN peering (WireGuard handshake between nodes)
+   - K3s cluster (`min_ready_nodes` nodes Ready)
+   - VPN peering (`min_vpn_handshakes` handshakes)
    - kubectl namespaces (4+ default namespaces)
+   - kubectl from client node (if `kubectl_from_client: true`)
 7. **Always cleanup**: terminate instances, delete SG (with retry), delete keypair
 
-Both instances use `skip_nix_rebuild: true` -- the AMI already has the full NixOS
+All instances use `skip_nix_rebuild: true` -- the AMI already has the full NixOS
 config. kindling-init provisions secrets, writes K3s config.yaml, and K3s auto-starts
 via `Before=k3s.service` systemd ordering.
 
