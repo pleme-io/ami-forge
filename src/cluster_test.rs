@@ -973,3 +973,129 @@ async fn cleanup(ec2: &aws_sdk_ec2::Client, res: &TestResources) {
 
     info!("Cleanup complete");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wg;
+
+    /// Build a minimal `ClusterTestConfig` for unit tests.
+    fn minimal_config(nodes: Vec<NodeConfig>) -> ClusterTestConfig {
+        ClusterTestConfig {
+            nodes,
+            instance_type: "t3.xlarge".to_string(),
+            timeout: 600,
+            k3s_token: "test-token-00000000".to_string(),
+            cluster_name: "unit-test".to_string(),
+            checks: CheckConfig {
+                min_ready_nodes: 1,
+                min_vpn_handshakes: 0,
+                kubectl_from_client: false,
+            },
+            region: "us-east-1".to_string(),
+        }
+    }
+
+    fn cp_node() -> NodeConfig {
+        NodeConfig {
+            name: "cp".to_string(),
+            role: "server".to_string(),
+            cluster_init: true,
+            vpn_address: Some("10.99.0.1/24".to_string()),
+            node_index: 0,
+        }
+    }
+
+    fn worker_node(index: u32) -> NodeConfig {
+        NodeConfig {
+            name: format!("worker{index}"),
+            role: "agent".to_string(),
+            cluster_init: false,
+            vpn_address: Some(format!("10.99.0.{}/24", index + 1)),
+            node_index: index,
+        }
+    }
+
+    #[test]
+    fn build_userdata_cp_has_cluster_init() {
+        let nodes = vec![cp_node(), worker_node(1)];
+        let config = minimal_config(nodes);
+        let keys: Vec<_> = (0..2).map(|_| wg::generate_keypair()).collect();
+        let psk = wg::generate_psk();
+
+        let userdata = build_userdata(&config.nodes[0], &config, &keys[0].private_key, &keys, &psk, None);
+        let parsed: serde_json::Value = serde_json::from_str(&userdata).unwrap();
+
+        assert_eq!(parsed["cluster_init"], true);
+        assert!(parsed["join_server"].is_null());
+        assert_eq!(parsed["cluster_name"], "unit-test");
+        assert_eq!(parsed["role"], "server");
+    }
+
+    #[test]
+    fn build_userdata_worker_has_join_server() {
+        let nodes = vec![cp_node(), worker_node(1)];
+        let config = minimal_config(nodes);
+        let keys: Vec<_> = (0..2).map(|_| wg::generate_keypair()).collect();
+        let psk = wg::generate_psk();
+        let cp_ip = "172.31.0.10";
+
+        let userdata = build_userdata(&config.nodes[1], &config, &keys[1].private_key, &keys, &psk, Some(cp_ip));
+        let parsed: serde_json::Value = serde_json::from_str(&userdata).unwrap();
+
+        assert_eq!(parsed["cluster_init"], false);
+        assert_eq!(parsed["join_server"], format!("https://{cp_ip}:6443"));
+        assert_eq!(parsed["role"], "agent");
+    }
+
+    #[test]
+    fn build_userdata_peer_list_excludes_self() {
+        let nodes = vec![cp_node(), worker_node(1), worker_node(2)];
+        let config = minimal_config(nodes);
+        let keys: Vec<_> = (0..3).map(|_| wg::generate_keypair()).collect();
+        let psk = wg::generate_psk();
+
+        // Check each node's peer list does not include its own public key
+        for (i, node) in config.nodes.iter().enumerate() {
+            let cp_ip = if i == 0 { None } else { Some("172.31.0.10") };
+            let userdata = build_userdata(node, &config, &keys[i].private_key, &keys, &psk, cp_ip);
+            let parsed: serde_json::Value = serde_json::from_str(&userdata).unwrap();
+
+            let peers = parsed["vpn"]["links"][0]["peers"].as_array().unwrap();
+            let own_pubkey = &keys[i].public_key;
+            for peer in peers {
+                assert_ne!(
+                    peer["public_key"].as_str().unwrap(),
+                    own_pubkey,
+                    "node {} should not have its own public key in peer list",
+                    node.name
+                );
+            }
+            // Peer count should be total nodes minus self
+            assert_eq!(peers.len(), config.nodes.len() - 1);
+        }
+    }
+
+    #[test]
+    fn build_userdata_vpn_address_derived_from_index() {
+        // When vpn_address is None, vpn_addr() derives from node_index
+        let node = NodeConfig {
+            name: "auto".to_string(),
+            role: "agent".to_string(),
+            cluster_init: false,
+            vpn_address: None,
+            node_index: 5,
+        };
+        assert_eq!(node.vpn_addr(), "10.99.0.6/24");
+
+        // When vpn_address is Some, it uses the explicit value
+        let node_explicit = NodeConfig {
+            name: "explicit".to_string(),
+            role: "server".to_string(),
+            cluster_init: true,
+            vpn_address: Some("10.88.0.1/24".to_string()),
+            node_index: 0,
+        };
+        assert_eq!(node_explicit.vpn_addr(), "10.88.0.1/24");
+    }
+}
