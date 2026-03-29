@@ -73,14 +73,30 @@ fn default_attic_cache_name() -> String {
 // Attic ephemeral cache lifecycle
 // ---------------------------------------------------------------------------
 
+/// Tracked resources for Attic ephemeral cache lifecycle.
+///
+/// Contains everything needed for health checks, build URL injection,
+/// and cleanup (instance + security group).
+struct AtticResources {
+    instance_id: String,
+    /// Private IP — used for the substituter URL (build instance is in the same VPC).
+    private_ip: String,
+    /// Public IP — used for health checks from the local machine.
+    public_ip: String,
+    /// Security group created for Attic (allows port 8080 ingress).
+    sg_id: String,
+}
+
 /// Boot an Attic cache instance from the last-known-good AMI.
 ///
-/// Returns `(instance_id, private_ip)`.
+/// Creates a temporary security group that allows TCP 8080 from 0.0.0.0/0
+/// (needed for the health check from the local machine), launches the instance,
+/// and polls for both private and public IPs.
 async fn attic_boot(
     ec2: &aws_sdk_ec2::Client,
     ssm: &aws_sdk_ssm::Client,
     config: &AtticConfig,
-) -> Result<(String, String)> {
+) -> Result<AtticResources> {
     // 1. Resolve Attic AMI ID from SSM
     let ami_id = ssm
         .get_parameter()
@@ -94,7 +110,72 @@ async fn attic_boot(
 
     info!("Booting Attic cache from AMI {ami_id}");
 
-    // 2. Launch instance
+    // 2. Create temporary security group for Attic (port 8080 open)
+    let vpc_resp = ec2
+        .describe_vpcs()
+        .filters(
+            aws_sdk_ec2::types::Filter::builder()
+                .name("isDefault")
+                .values("true")
+                .build(),
+        )
+        .send()
+        .await?;
+    let vpc_id = vpc_resp
+        .vpcs()
+        .first()
+        .and_then(|v| v.vpc_id())
+        .context("no default VPC")?;
+
+    let sg_name = format!("ami-forge-attic-{}", std::process::id());
+    let sg_resp = ec2
+        .create_security_group()
+        .group_name(&sg_name)
+        .description("Temporary SG for Attic cache — allows port 8080")
+        .vpc_id(vpc_id)
+        .tag_specifications(
+            aws_sdk_ec2::types::TagSpecification::builder()
+                .resource_type(aws_sdk_ec2::types::ResourceType::SecurityGroup)
+                .tags(
+                    aws_sdk_ec2::types::Tag::builder()
+                        .key("Name")
+                        .value("ami-forge-attic-cache")
+                        .build(),
+                )
+                .tags(
+                    aws_sdk_ec2::types::Tag::builder()
+                        .key("ManagedBy")
+                        .value("ami-forge")
+                        .build(),
+                )
+                .build(),
+        )
+        .send()
+        .await
+        .context("CreateSecurityGroup for Attic failed")?;
+    let sg_id = sg_resp.group_id().context("no SG ID")?.to_string();
+    info!("Attic security group created: {sg_id}");
+
+    // Allow TCP 8080 from anywhere (health check runs from local machine)
+    ec2.authorize_security_group_ingress()
+        .group_id(&sg_id)
+        .ip_permissions(
+            aws_sdk_ec2::types::IpPermission::builder()
+                .ip_protocol("tcp")
+                .from_port(8080)
+                .to_port(8080)
+                .ip_ranges(
+                    aws_sdk_ec2::types::IpRange::builder()
+                        .cidr_ip("0.0.0.0/0")
+                        .build(),
+                )
+                .build(),
+        )
+        .send()
+        .await
+        .context("authorize_security_group_ingress (attic 8080) failed")?;
+
+    // 3. Launch instance with the new SG
     let resp = ec2
         .run_instances()
         .image_id(&ami_id)
@@ -103,6 +184,7 @@ async fn attic_boot(
         ))
         .min_count(1)
         .max_count(1)
+        .security_group_ids(&sg_id)
         .tag_specifications(
             aws_sdk_ec2::types::TagSpecification::builder()
                 .resource_type(aws_sdk_ec2::types::ResourceType::Instance)
@@ -133,25 +215,34 @@ async fn attic_boot(
 
     info!("Attic instance launched: {instance_id}");
 
-    // 3. Poll for private IP (instance must be running)
+    // 4. Poll for both private and public IPs (instance must be running)
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         if Instant::now() > deadline {
-            bail!("Attic instance {instance_id} did not get a private IP within 120s");
+            bail!("Attic instance {instance_id} did not get IPs within 120s");
         }
         let desc = ec2
             .describe_instances()
             .instance_ids(&instance_id)
             .send()
             .await?;
-        if let Some(ip) = desc
+        let inst = desc
             .reservations()
             .first()
-            .and_then(|r| r.instances().first())
-            .and_then(|i| i.private_ip_address())
-        {
-            info!("Attic instance {instance_id} ready at {ip}");
-            return Ok((instance_id, ip.to_string()));
+            .and_then(|r| r.instances().first());
+        let private_ip = inst.and_then(|i| i.private_ip_address());
+        let public_ip = inst.and_then(|i| i.public_ip_address());
+
+        if let (Some(priv_ip), Some(pub_ip)) = (private_ip, public_ip) {
+            info!(
+                "Attic instance {instance_id} ready — private={priv_ip}, public={pub_ip}"
+            );
+            return Ok(AtticResources {
+                instance_id,
+                private_ip: priv_ip.to_string(),
+                public_ip: pub_ip.to_string(),
+                sg_id,
+            });
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
@@ -234,14 +325,42 @@ async fn attic_snapshot(
     Ok(())
 }
 
-/// Terminate the ephemeral Attic instance.
-async fn attic_teardown(ec2: &aws_sdk_ec2::Client, instance_id: &str) -> Result<()> {
-    info!("Terminating Attic instance {instance_id}");
+/// Terminate the ephemeral Attic instance and delete its security group.
+async fn attic_teardown(ec2: &aws_sdk_ec2::Client, res: &AtticResources) -> Result<()> {
+    info!("Terminating Attic instance {}", res.instance_id);
     ec2.terminate_instances()
-        .instance_ids(instance_id)
+        .instance_ids(&res.instance_id)
         .send()
         .await
         .context("failed to terminate Attic instance")?;
+
+    // Wait for termination, then delete the security group.
+    // SG deletion fails while instances are still using it.
+    info!("Deleting Attic security group: {}", res.sg_id);
+    for attempt in 0..5 {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        match ec2
+            .delete_security_group()
+            .group_id(&res.sg_id)
+            .send()
+            .await
+        {
+            Ok(_) => {
+                info!("Attic security group {} deleted", res.sg_id);
+                return Ok(());
+            }
+            Err(e) => {
+                if attempt < 4 {
+                    warn!(
+                        "Attic SG delete attempt {}: {e} — retrying",
+                        attempt + 1
+                    );
+                } else {
+                    warn!("Failed to delete Attic SG {}: {e}", res.sg_id);
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -277,19 +396,19 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
     info!("Pipeline starting as {arn}");
 
     // ── Attic ephemeral cache (optional) ────────────────────────
-    let mut attic_instance: Option<(String, String)> = None;
+    let mut attic_res: Option<AtticResources> = None;
     if let Some(ref attic_cfg) = config.attic {
         info!("[attic] Booting ephemeral cache from {}", attic_cfg.ssm);
         let ec2_client = aws_sdk_ec2::Client::new(&aws_config);
         let ssm_client = aws_sdk_ssm::Client::new(&aws_config);
         match attic_boot(&ec2_client, &ssm_client, attic_cfg).await {
-            Ok((id, ip)) => match attic_wait_healthy(&ip, 180).await {
+            Ok(res) => match attic_wait_healthy(&res.public_ip, 180).await {
                 Ok(()) => {
-                    attic_instance = Some((id, ip));
+                    attic_res = Some(res);
                 }
                 Err(e) => {
                     warn!("[attic] Health check failed (degrading without cache): {e:#}");
-                    if let Err(te) = attic_teardown(&ec2_client, &id).await {
+                    if let Err(te) = attic_teardown(&ec2_client, &res).await {
                         warn!("[attic] Teardown of unhealthy instance also failed: {te:#}");
                     }
                 }
@@ -302,17 +421,17 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
 
     // Run the pipeline phases, capturing the result so Attic cleanup always runs.
     let pipeline_result =
-        run_pipeline_phases(&config, &aws_config, &attic_instance, total_phases).await;
+        run_pipeline_phases(&config, &aws_config, &attic_res, total_phases).await;
 
     // ── Attic snapshot + teardown (ALWAYS — cache grows richer) ─
-    if let Some((ref id, _)) = attic_instance {
-        let attic_cfg = config.attic.as_ref().expect("attic_instance set implies config.attic is Some");
+    if let Some(ref res) = attic_res {
+        let attic_cfg = config.attic.as_ref().expect("attic_res set implies config.attic is Some");
         let ec2_client = aws_sdk_ec2::Client::new(&aws_config);
         let ssm_client = aws_sdk_ssm::Client::new(&aws_config);
-        if let Err(e) = attic_snapshot(&ec2_client, &ssm_client, id, &attic_cfg.ssm).await {
+        if let Err(e) = attic_snapshot(&ec2_client, &ssm_client, &res.instance_id, &attic_cfg.ssm).await {
             warn!("[attic] Snapshot failed (non-fatal): {e:#}");
         }
-        if let Err(e) = attic_teardown(&ec2_client, id).await {
+        if let Err(e) = attic_teardown(&ec2_client, res).await {
             warn!("[attic] Teardown failed: {e:#}");
         }
     }
@@ -325,7 +444,7 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
 async fn run_pipeline_phases(
     config: &PipelineConfig,
     aws_config: &aws_config::SdkConfig,
-    attic_instance: &Option<(String, String)>,
+    attic_res: &Option<AtticResources>,
     total_phases: usize,
 ) -> Result<()> {
     let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
@@ -338,14 +457,18 @@ async fn run_pipeline_phases(
     run_packer_init(&build_tpl)?;
 
     let mut build_vars = vec![format!("github_token={github_token}")];
-    if let Some((_, ref ip)) = *attic_instance {
+    if let Some(ref res) = *attic_res {
         let cache_name = &config
             .attic
             .as_ref()
-            .expect("attic_instance set implies config.attic is Some")
+            .expect("attic_res set implies config.attic is Some")
             .cache_name;
-        build_vars.push(format!("attic_url=http://{ip}:8080/{cache_name}"));
-        info!("[attic] Passing substituter URL to Packer build");
+        // Use private IP — the build instance is in the same VPC as the Attic server
+        build_vars.push(format!(
+            "attic_url=http://{}:8080/{cache_name}",
+            res.private_ip
+        ));
+        info!("[attic] Passing substituter URL to Packer build (private IP)");
     }
     run_packer_build(&build_tpl, &build_vars)?;
 
