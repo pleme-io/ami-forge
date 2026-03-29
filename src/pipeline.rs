@@ -131,7 +131,7 @@ async fn attic_boot(
     let sg_resp = ec2
         .create_security_group()
         .group_name(&sg_name)
-        .description("Temporary SG for Attic cache — allows port 8080")
+        .description("Temporary SG for Attic cache - allows port 8080")
         .vpc_id(vpc_id)
         .tag_specifications(
             aws_sdk_ec2::types::TagSpecification::builder()
