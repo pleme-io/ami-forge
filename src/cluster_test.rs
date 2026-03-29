@@ -429,10 +429,13 @@ fn build_userdata(
     let peers: Vec<serde_json::Value> = config.nodes.iter()
         .enumerate()
         .filter(|(i, _)| *i != node.node_index as usize)
-        .map(|(i, _other)| {
+        .map(|(i, other)| {
+            // Each peer gets its specific VPN IP as allowed_ips (not the whole subnet).
+            // WireGuard only allows one peer per allowed_ips range.
+            let peer_ip = other.vpn_address.split('/').next().unwrap_or("10.99.0.0");
             let mut peer = serde_json::json!({
                 "public_key": all_keys[i].public_key,
-                "allowed_ips": ["10.99.0.0/24"],
+                "allowed_ips": [format!("{peer_ip}/32")],
                 "preshared_key_file": "/run/secrets.d/vpn-psk",
                 "persistent_keepalive": 25
             });
