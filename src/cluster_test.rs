@@ -7,12 +7,334 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
 use crate::wg;
+
+// ---------------------------------------------------------------------------
+// P0.1 — Structured check result
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct CheckResult {
+    name: String,
+    passed: bool,
+    message: String,
+    duration_ms: u64,
+    debug_output: Option<String>,
+}
+
+impl CheckResult {
+    fn pass(name: &str, message: impl Into<String>, start: Instant) -> Self {
+        Self {
+            name: name.to_string(),
+            passed: true,
+            message: message.into(),
+            duration_ms: start.elapsed().as_millis() as u64,
+            debug_output: None,
+        }
+    }
+
+    fn fail(name: &str, message: impl Into<String>, start: Instant, debug: Option<String>) -> Self {
+        Self {
+            name: name.to_string(),
+            passed: false,
+            message: message.into(),
+            duration_ms: start.elapsed().as_millis() as u64,
+            debug_output: debug,
+        }
+    }
+
+    fn status_tag(&self) -> &str {
+        if self.passed { "PASS" } else { "FAIL" }
+    }
+}
+
+fn print_results_table(results: &[CheckResult]) {
+    println!();
+    info!("=== Cluster Test Results ===");
+    for r in results {
+        let suffix = if r.message.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", r.message)
+        };
+        info!(
+            "[{}] {:<22} ({}ms){}",
+            r.status_tag(),
+            r.name,
+            r.duration_ms,
+            suffix,
+        );
+    }
+    let passed = results.iter().filter(|r| r.passed).count();
+    let total = results.len();
+    info!("{passed}/{total} checks passed");
+
+    // Dump debug output for failures
+    for r in results.iter().filter(|r| !r.passed) {
+        if let Some(ref dbg) = r.debug_output {
+            error!("[{}] debug output:\n{dbg}", r.name);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P0.3 — SSH session abstraction
+// ---------------------------------------------------------------------------
+
+struct SshSession {
+    host: String,
+    key_file: PathBuf,
+}
+
+impl SshSession {
+    fn new(host: &str, key_file: &PathBuf) -> Self {
+        Self {
+            host: host.to_string(),
+            key_file: key_file.clone(),
+        }
+    }
+
+    fn ssh_args(&self, cmd: &str) -> Vec<String> {
+        vec![
+            "-o".into(), "StrictHostKeyChecking=no".into(),
+            "-o".into(), "UserKnownHostsFile=/dev/null".into(),
+            "-o".into(), "ConnectTimeout=10".into(),
+            "-o".into(), "LogLevel=ERROR".into(),
+            "-i".into(), self.key_file.to_string_lossy().to_string(),
+            format!("root@{}", self.host),
+            cmd.to_string(),
+        ]
+    }
+
+    /// Run a command and return whether it exited successfully.
+    async fn check(&self, cmd: &str) -> bool {
+        tokio::process::Command::new("ssh")
+            .args(self.ssh_args(cmd))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Run a command and return combined stdout+stderr.
+    async fn output(&self, cmd: &str) -> String {
+        tokio::process::Command::new("ssh")
+            .args(self.ssh_args(cmd))
+            .output()
+            .await
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                format!("{stdout}{stderr}")
+            })
+            .unwrap_or_default()
+    }
+
+    /// Run a command, log its output.
+    #[allow(dead_code)]
+    async fn cmd(&self, cmd: &str) {
+        let output = self.output(cmd).await;
+        if !output.is_empty() {
+            info!("{output}");
+        }
+    }
+
+    /// Poll a command until it succeeds or the deadline expires.
+    async fn poll(&self, cmd: &str, deadline: Instant, interval: Duration) -> bool {
+        loop {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            if self.check(cmd).await {
+                return true;
+            }
+            tokio::time::sleep(interval).await;
+        }
+    }
+
+    /// Wait for SSH connectivity (short connect timeout).
+    async fn wait_for_ssh(&self, deadline: Instant) -> Result<()> {
+        let connect_args: Vec<String> = vec![
+            "-o".into(), "StrictHostKeyChecking=no".into(),
+            "-o".into(), "UserKnownHostsFile=/dev/null".into(),
+            "-o".into(), "ConnectTimeout=5".into(),
+            "-o".into(), "LogLevel=ERROR".into(),
+            "-i".into(), self.key_file.to_string_lossy().to_string(),
+            format!("root@{}", self.host),
+            "true".into(),
+        ];
+        loop {
+            if Instant::now() >= deadline {
+                bail!("Timed out waiting for SSH on {}", self.host);
+            }
+            let status = tokio::process::Command::new("ssh")
+                .args(&connect_args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await;
+            if let Ok(s) = status {
+                if s.success() {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Individual check functions (return CheckResult)
+// ---------------------------------------------------------------------------
+
+async fn check_cp_kindling_init(cp: &SshSession, deadline: Instant) -> CheckResult {
+    let start = Instant::now();
+    let ok = cp.poll(
+        "systemctl show kindling-init.service --property=ActiveState | grep -q active",
+        deadline,
+        Duration::from_secs(5),
+    ).await;
+    if ok {
+        CheckResult::pass("cp-kindling-init", "completed", start)
+    } else {
+        let debug = cp.output("journalctl -u kindling-init -n 30 --no-pager").await;
+        CheckResult::fail("cp-kindling-init", "timed out", start, Some(debug))
+    }
+}
+
+async fn check_cp_wireguard(cp: &SshSession) -> CheckResult {
+    let start = Instant::now();
+    let ok = cp.check("wg show all dump | grep -q wg-").await;
+    if ok {
+        CheckResult::pass("cp-wireguard", "interface configured", start)
+    } else {
+        let debug = cp.output("wg show all 2>&1; ip link show 2>&1").await;
+        CheckResult::fail("cp-wireguard", "no interface", start, Some(debug))
+    }
+}
+
+async fn check_k3s_cluster(cp: &SshSession, min_ready: u32) -> CheckResult {
+    let start = Instant::now();
+    let k3s_deadline = Instant::now() + Duration::from_secs(900);
+    let k3s_check = format!(
+        "test $(kubectl get nodes --no-headers 2>/dev/null | grep -c Ready) -ge {min_ready}"
+    );
+    let ok = cp.poll(&k3s_check, k3s_deadline, Duration::from_secs(10)).await;
+    if ok {
+        let node_info = cp.output("kubectl get nodes --no-headers").await;
+        let ready_count = node_info.lines().filter(|l| l.contains("Ready")).count();
+        CheckResult::pass("k3s-cluster", format!("{ready_count} nodes Ready"), start)
+    } else {
+        let debug = cp.output(
+            "kubectl get nodes --no-headers 2>&1; echo '---'; journalctl -u k3s -n 20 --no-pager",
+        ).await;
+        CheckResult::fail(
+            "k3s-cluster",
+            format!("did not reach {min_ready} Ready nodes"),
+            start,
+            Some(debug),
+        )
+    }
+}
+
+async fn check_vpn_peering(cp: &SshSession, min_hs: u32, deadline: Instant) -> CheckResult {
+    let start = Instant::now();
+    let ok = cp.poll(
+        &format!(
+            "test $(wg show all 2>/dev/null | grep -c 'latest handshake') -ge {min_hs}"
+        ),
+        deadline,
+        Duration::from_secs(5),
+    ).await;
+    if ok {
+        let wg_info = cp.output("wg show all").await;
+        let hs_count = wg_info.lines().filter(|l| l.contains("latest handshake")).count();
+        CheckResult::pass("vpn-peering", format!("{hs_count} handshakes"), start)
+    } else {
+        let debug = cp.output("wg show all 2>&1").await;
+        CheckResult::fail(
+            "vpn-peering",
+            format!("insufficient handshakes (need {min_hs})"),
+            start,
+            Some(debug),
+        )
+    }
+}
+
+async fn check_kubectl_cp(cp: &SshSession) -> CheckResult {
+    let start = Instant::now();
+    let ok = cp.check(
+        "test $(kubectl get namespaces --no-headers 2>/dev/null | wc -l) -ge 4",
+    ).await;
+    if ok {
+        CheckResult::pass("kubectl-cp", "namespaces accessible from CP", start)
+    } else {
+        let debug = cp.output("kubectl get namespaces 2>&1").await;
+        CheckResult::fail("kubectl-cp", "namespaces not accessible", start, Some(debug))
+    }
+}
+
+async fn check_kubectl_client(
+    cp: &SshSession,
+    client: &SshSession,
+    cp_vpn_ip: &str,
+    deadline: Instant,
+) -> CheckResult {
+    let start = Instant::now();
+
+    // Copy kubeconfig from CP to client, rewrite server URL to CP VPN IP
+    let kubeconfig = cp.output("cat /etc/rancher/k3s/k3s.yaml 2>/dev/null").await;
+    if kubeconfig.trim().is_empty() {
+        return CheckResult::fail(
+            "kubectl-client",
+            "could not read kubeconfig from CP",
+            start,
+            None,
+        );
+    }
+
+    let rewritten = kubeconfig.replace("127.0.0.1", cp_vpn_ip).replace("localhost", cp_vpn_ip);
+    let tmp = std::env::temp_dir().join("cluster-test-kubeconfig");
+    std::fs::write(&tmp, &rewritten).ok();
+    let _ = client.check("mkdir -p /root/.kube").await;
+    let scp_status = tokio::process::Command::new("scp")
+        .args([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-i", &client.key_file.to_string_lossy(),
+            &tmp.to_string_lossy(),
+            &format!("root@{}:/root/.kube/test-config", client.host),
+        ])
+        .status()
+        .await;
+    match scp_status {
+        Ok(s) if s.success() => info!("Copied kubeconfig to client (server rewritten to {cp_vpn_ip})"),
+        _ => warn!("Failed to scp kubeconfig to client"),
+    }
+    std::fs::remove_file(&tmp).ok();
+
+    let ok = client.poll(
+        "KUBECONFIG=/root/.kube/test-config kubectl get namespaces --no-headers 2>/dev/null | grep -q default",
+        deadline,
+        Duration::from_secs(10),
+    ).await;
+    if ok {
+        CheckResult::pass("kubectl-client", "client->VPN->CP", start)
+    } else {
+        let debug = client.output(
+            "KUBECONFIG=/root/.kube/test-config kubectl get namespaces 2>&1; echo '---'; wg show all 2>&1; echo '---'; cat /root/.kube/test-config 2>&1 | head -5",
+        ).await;
+        CheckResult::fail("kubectl-client", "client cannot reach CP K3s API via VPN", start, Some(debug))
+    }
+}
 
 #[derive(Args)]
 pub struct ClusterTestArgs {
@@ -311,175 +633,54 @@ async fn run_inner(
     }
 
     // 5. Wait for SSH on CP
+    let cp_ssh = SshSession::new(&cp_public_ip, &key_file);
     info!("[cluster-test:5/7] Waiting for SSH on control plane");
-    wait_for_ssh(&cp_public_ip, &key_file, deadline).await?;
+    cp_ssh.wait_for_ssh(deadline).await?;
 
     // If kubectl_from_client is enabled, also wait for SSH on the last node (client)
     let client_index = node_count - 1;
-    if config.checks.kubectl_from_client {
+    let client_ssh = if config.checks.kubectl_from_client {
         let client_public_ip = &node_ips[client_index].1;
+        let session = SshSession::new(client_public_ip, &key_file);
         info!("[cluster-test:6/7] Waiting for SSH on client node ({})", config.nodes[client_index].name);
-        wait_for_ssh(client_public_ip, &key_file, deadline).await?;
+        session.wait_for_ssh(deadline).await?;
+        Some(session)
     } else {
         info!("[cluster-test:6/7] Skipping client SSH (kubectl_from_client: false)");
-    }
+        None
+    };
 
     // 7. Run validation checks
     info!("[cluster-test:7/7] Running cluster validation");
-    let mut passed = 0;
-    let mut total = 0;
+    let mut results: Vec<CheckResult> = Vec::new();
 
     // Check 1: kindling-init completed on CP
-    total += 1;
-    let init_ok = ssh_poll(
-        &cp_public_ip,
-        &key_file,
-        "systemctl show kindling-init.service --property=ActiveState | grep -q active",
-        deadline,
-        Duration::from_secs(5),
-    ).await;
-    if init_ok {
-        passed += 1;
-        info!("[PASS] cp-kindling-init: completed");
-    } else {
-        error!("[FAIL] cp-kindling-init: timed out");
-        ssh_cmd(&cp_public_ip, &key_file, "journalctl -u kindling-init -n 30 --no-pager").await;
-    }
+    results.push(check_cp_kindling_init(&cp_ssh, deadline).await);
 
     // Check 2: WireGuard on CP has peers
-    total += 1;
-    let wg_ok = ssh_check(&cp_public_ip, &key_file, "wg show all dump | grep -q wg-").await;
-    if wg_ok {
-        passed += 1;
-        info!("[PASS] cp-wireguard: interface configured");
-    } else {
-        error!("[FAIL] cp-wireguard: no interface");
-    }
+    results.push(check_cp_wireguard(&cp_ssh).await);
 
-    // Check 3: K3s cluster (FIRST — longest wait, gives VPN time to establish)
-    // Use a dedicated 600s deadline for K3s — etcd init can take 15-20 min on t3,
-    // the global deadline is too short after instance setup consumed most of it.
-    total += 1;
-    let min_ready = config.checks.min_ready_nodes;
-    let k3s_deadline = Instant::now() + Duration::from_secs(900);
-    let k3s_check = format!(
-        "test $(kubectl get nodes --no-headers 2>/dev/null | grep -c Ready) -ge {min_ready}"
-    );
-    let k3s_ok = ssh_poll(&cp_public_ip, &key_file, &k3s_check, k3s_deadline, Duration::from_secs(10)).await;
-    if k3s_ok {
-        passed += 1;
-        let node_info = ssh_output(&cp_public_ip, &key_file, "kubectl get nodes --no-headers").await;
-        info!("[PASS] k3s-cluster: {min_ready}+ nodes Ready\n{node_info}");
-    } else {
-        error!("[FAIL] k3s-cluster: did not reach {min_ready} Ready nodes");
-        let node_info = ssh_output(
-            &cp_public_ip,
-            &key_file,
-            "kubectl get nodes --no-headers 2>&1; echo '---'; journalctl -u k3s -n 20 --no-pager",
-        ).await;
-        error!("K3s debug:\n{node_info}");
-    }
+    // Check 3: K3s cluster (longest wait, gives VPN time to establish)
+    results.push(check_k3s_cluster(&cp_ssh, config.checks.min_ready_nodes).await);
 
-    // Check 4: VPN handshakes (runs AFTER K3s wait — by now keepalives are established)
-    // Use `wg show all dump` which is machine-readable (tab-separated), and count
-    // peers with non-zero latest-handshake (field 6 in peer lines).
-    total += 1;
-    let min_hs = config.checks.min_vpn_handshakes;
-    // Count peers with "latest handshake" in human-readable wg show output.
-    // This is the most reliable check — if "latest handshake" appears, the peer has connected.
-    let vpn_ok = ssh_poll(
-        &cp_public_ip,
-        &key_file,
-        &format!(
-            "test $(wg show all 2>/dev/null | grep -c 'latest handshake') -ge {min_hs}"
-        ),
-        deadline,
-        Duration::from_secs(5),
-    ).await;
-    if vpn_ok {
-        passed += 1;
-        let wg_info = ssh_output(&cp_public_ip, &key_file, "wg show all").await;
-        info!("[PASS] vpn-peering: {min_hs}+ WireGuard handshakes\n{wg_info}");
-    } else {
-        error!("[FAIL] vpn-peering: insufficient WireGuard handshakes (need {min_hs})");
-        let wg_info = ssh_output(&cp_public_ip, &key_file, "wg show all 2>&1").await;
-        error!("WireGuard debug:\n{wg_info}");
-    }
+    // Check 4: VPN handshakes (runs AFTER K3s wait — keepalives established)
+    results.push(check_vpn_peering(&cp_ssh, config.checks.min_vpn_handshakes, deadline).await);
 
     // Check 5: kubectl from CP
-    total += 1;
-    let ns_ok = ssh_check(
-        &cp_public_ip,
-        &key_file,
-        "test $(kubectl get namespaces --no-headers 2>/dev/null | wc -l) -ge 4",
-    ).await;
-    if ns_ok {
-        passed += 1;
-        info!("[PASS] kubectl-cp: namespaces accessible from CP");
-    } else {
-        error!("[FAIL] kubectl-cp: namespaces not accessible");
-    }
+    results.push(check_kubectl_cp(&cp_ssh).await);
 
     // Check 6: kubectl from client node via VPN
-    // Copy kubeconfig from CP, rewrite server URL to CP's VPN IP, then run kubectl
-    if config.checks.kubectl_from_client {
-        total += 1;
-        let client_public_ip = &node_ips[client_index].1;
+    if let Some(ref client) = client_ssh {
         let cp_vpn_full = config.nodes[cp_index].vpn_addr();
         let cp_vpn_ip = cp_vpn_full.split('/').next().unwrap_or("10.99.0.1");
-
-        // Copy kubeconfig from CP to client:
-        // Read from CP, rewrite server URL, write to client via temp file
-        let kubeconfig = ssh_output(&cp_public_ip, &key_file, "cat /etc/rancher/k3s/k3s.yaml 2>/dev/null").await;
-        if !kubeconfig.trim().is_empty() {
-            let rewritten = kubeconfig.replace("127.0.0.1", cp_vpn_ip).replace("localhost", cp_vpn_ip);
-            // Write to local temp file, then scp to client
-            let tmp = std::env::temp_dir().join("cluster-test-kubeconfig");
-            std::fs::write(&tmp, &rewritten).ok();
-            // Write to /root/.kube/test-config (NOT /root/.kube/config which K3s agent overwrites)
-            let _ = ssh_check(client_public_ip, &key_file, "mkdir -p /root/.kube").await;
-            let scp_status = tokio::process::Command::new("scp")
-                .args([
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null",
-                    "-o", "LogLevel=ERROR",
-                    "-i", &key_file.to_string_lossy(),
-                    &tmp.to_string_lossy(),
-                    &format!("root@{client_public_ip}:/root/.kube/test-config"),
-                ])
-                .status()
-                .await;
-            match scp_status {
-                Ok(s) if s.success() => info!("Copied kubeconfig to client (server rewritten to {cp_vpn_ip})"),
-                _ => warn!("Failed to scp kubeconfig to client"),
-            }
-            std::fs::remove_file(&tmp).ok();
-        } else {
-            warn!("Could not read kubeconfig from CP");
-        }
-
-        let client_kubectl_ok = ssh_poll(
-            client_public_ip,
-            &key_file,
-            "KUBECONFIG=/root/.kube/test-config kubectl get namespaces --no-headers 2>/dev/null | grep -q default",
-            deadline,
-            Duration::from_secs(10),
-        ).await;
-        if client_kubectl_ok {
-            passed += 1;
-            info!("[PASS] kubectl-client: client→VPN→CP K3s API works");
-        } else {
-            error!("[FAIL] kubectl-client: client cannot reach CP K3s API via VPN");
-            let client_debug = ssh_output(
-                client_public_ip,
-                &key_file,
-                "KUBECONFIG=/root/.kube/test-config kubectl get namespaces 2>&1; echo '---'; wg show all 2>&1; echo '---'; cat /root/.kube/test-config 2>&1 | head -5",
-            ).await;
-            error!("Client debug:\n{client_debug}");
-        }
+        results.push(check_kubectl_client(&cp_ssh, client, cp_vpn_ip, deadline).await);
     }
 
-    println!();
+    // Print structured summary table
+    print_results_table(&results);
+
+    let passed = results.iter().filter(|r| r.passed).count();
+    let total = results.len();
     if passed == total {
         info!("{passed}/{total} cluster integration checks passed — {node_count}-node cluster verified");
         Ok(())
@@ -689,108 +890,6 @@ async fn wait_for_ips(
             }
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
-    }
-}
-
-async fn wait_for_ssh(public_ip: &str, key_file: &PathBuf, deadline: Instant) -> Result<()> {
-    loop {
-        if Instant::now() >= deadline {
-            bail!("Timed out waiting for SSH on {public_ip}");
-        }
-        let status = tokio::process::Command::new("ssh")
-            .args(ssh_args(key_file, public_ip, "true"))
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await;
-        if let Ok(s) = status {
-            if s.success() {
-                return Ok(());
-            }
-        }
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
-}
-
-fn ssh_args(key_file: &PathBuf, host: &str, cmd: &str) -> Vec<String> {
-    vec![
-        "-o".into(), "StrictHostKeyChecking=no".into(),
-        "-o".into(), "UserKnownHostsFile=/dev/null".into(),
-        "-o".into(), "ConnectTimeout=5".into(),
-        "-o".into(), "LogLevel=ERROR".into(),
-        "-i".into(), key_file.to_string_lossy().to_string(),
-        format!("root@{host}"),
-        cmd.to_string(),
-    ]
-}
-
-// Workaround: ssh_args borrows, but we need owned strings for the format
-async fn ssh_check(public_ip: &str, key_file: &PathBuf, cmd: &str) -> bool {
-    let key_str = key_file.to_string_lossy().to_string();
-    let host = format!("root@{public_ip}");
-    tokio::process::Command::new("ssh")
-        .args([
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=10",
-            "-o", "LogLevel=ERROR",
-            "-i", &key_str,
-            &host,
-            cmd,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-async fn ssh_output(public_ip: &str, key_file: &PathBuf, cmd: &str) -> String {
-    let key_str = key_file.to_string_lossy().to_string();
-    let host = format!("root@{public_ip}");
-    tokio::process::Command::new("ssh")
-        .args([
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=10",
-            "-o", "LogLevel=ERROR",
-            "-i", &key_str,
-            &host,
-            cmd,
-        ])
-        .output()
-        .await
-        .map(|o| {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            format!("{stdout}{stderr}")
-        })
-        .unwrap_or_default()
-}
-
-async fn ssh_cmd(public_ip: &str, key_file: &PathBuf, cmd: &str) {
-    let output = ssh_output(public_ip, key_file, cmd).await;
-    if !output.is_empty() {
-        info!("{output}");
-    }
-}
-
-async fn ssh_poll(
-    public_ip: &str,
-    key_file: &PathBuf,
-    cmd: &str,
-    deadline: Instant,
-    interval: Duration,
-) -> bool {
-    loop {
-        if Instant::now() >= deadline {
-            return false;
-        }
-        if ssh_check(public_ip, key_file, cmd).await {
-            return true;
-        }
-        tokio::time::sleep(interval).await;
     }
 }
 
