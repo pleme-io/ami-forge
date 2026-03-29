@@ -436,8 +436,8 @@ async fn run_inner(
             // Write to local temp file, then scp to client
             let tmp = std::env::temp_dir().join("cluster-test-kubeconfig");
             std::fs::write(&tmp, &rewritten).ok();
+            // Write to /root/.kube/test-config (NOT /root/.kube/config which K3s agent overwrites)
             let _ = ssh_check(client_public_ip, &key_file, "mkdir -p /root/.kube").await;
-            // Use scp to transfer the file
             let scp_status = tokio::process::Command::new("scp")
                 .args([
                     "-o", "StrictHostKeyChecking=no",
@@ -445,7 +445,7 @@ async fn run_inner(
                     "-o", "LogLevel=ERROR",
                     "-i", &key_file.to_string_lossy(),
                     &tmp.to_string_lossy(),
-                    &format!("root@{client_public_ip}:/root/.kube/config"),
+                    &format!("root@{client_public_ip}:/root/.kube/test-config"),
                 ])
                 .status()
                 .await;
@@ -461,7 +461,7 @@ async fn run_inner(
         let client_kubectl_ok = ssh_poll(
             client_public_ip,
             &key_file,
-            "kubectl get namespaces --no-headers 2>/dev/null | grep -q default",
+            "KUBECONFIG=/root/.kube/test-config kubectl get namespaces --no-headers 2>/dev/null | grep -q default",
             deadline,
             Duration::from_secs(10),
         ).await;
@@ -473,7 +473,7 @@ async fn run_inner(
             let client_debug = ssh_output(
                 client_public_ip,
                 &key_file,
-                "kubectl get namespaces 2>&1; echo '---'; wg show all 2>&1",
+                "KUBECONFIG=/root/.kube/test-config kubectl get namespaces 2>&1; echo '---'; wg show all 2>&1; echo '---'; cat /root/.kube/test-config 2>&1 | head -5",
             ).await;
             error!("Client debug:\n{client_debug}");
         }
