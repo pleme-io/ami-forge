@@ -202,7 +202,8 @@ async fn run_inner(
                 .build(),
         )
         .send()
-        .await?;
+        .await
+        .context("authorize_security_group_ingress (self) failed")?;
 
     // Allow SSH from anywhere (for our validation)
     ec2.authorize_security_group_ingress()
@@ -220,7 +221,8 @@ async fn run_inner(
                 .build(),
         )
         .send()
-        .await?;
+        .await
+        .context("authorize_security_group_ingress (ssh) failed")?;
 
     // 4. Launch CP instance first (others need its IP)
     let role_summary: Vec<_> = config.nodes.iter().map(|n| format!("{} ({})", n.name, n.role)).collect();
@@ -560,6 +562,9 @@ async fn wait_for_ips(
     instance_id: &str,
     deadline: Instant,
 ) -> Result<(String, String)> {
+    // EC2 eventual consistency: instance may not be visible for 2-5s after launch
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
     loop {
         if Instant::now() >= deadline {
             bail!("Timed out waiting for IPs on {instance_id}");
@@ -568,16 +573,25 @@ async fn wait_for_ips(
             .describe_instances()
             .instance_ids(instance_id)
             .send()
-            .await?;
-        if let Some(inst) = resp
-            .reservations()
-            .first()
-            .and_then(|r| r.instances().first())
-        {
-            if let (Some(priv_ip), Some(pub_ip)) =
-                (inst.private_ip_address(), inst.public_ip_address())
-            {
-                return Ok((priv_ip.to_string(), pub_ip.to_string()));
+            .await;
+
+        match resp {
+            Ok(r) => {
+                if let Some(inst) = r.reservations().first().and_then(|r| r.instances().first()) {
+                    if let (Some(priv_ip), Some(pub_ip)) =
+                        (inst.private_ip_address(), inst.public_ip_address())
+                    {
+                        return Ok((priv_ip.to_string(), pub_ip.to_string()));
+                    }
+                }
+            }
+            Err(e) => {
+                let err_str = format!("{e}");
+                if err_str.contains("InvalidInstanceID") || err_str.contains("does not exist") {
+                    info!("Instance {instance_id} not yet visible (eventual consistency), retrying...");
+                } else {
+                    return Err(anyhow::anyhow!("describe_instances for {instance_id}: {e:#}"));
+                }
             }
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
