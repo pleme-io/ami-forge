@@ -47,8 +47,17 @@ pub struct NodeConfig {
     pub role: String,
     #[serde(default)]
     pub cluster_init: bool,
-    pub vpn_address: String,
+    #[serde(default)]
+    pub vpn_address: Option<String>,
     pub node_index: u32,
+}
+
+impl NodeConfig {
+    pub fn vpn_addr(&self) -> String {
+        self.vpn_address
+            .clone()
+            .unwrap_or_else(|| format!("10.99.0.{}/24", self.node_index + 1))
+    }
 }
 
 #[derive(Deserialize)]
@@ -107,6 +116,13 @@ async fn run_inner(
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(config.timeout);
     let node_count = config.nodes.len();
+    let test_id = format!(
+        "cluster-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    );
 
     // 1. Generate WireGuard keypairs for all nodes
     info!("[cluster-test:1/7] Generating WireGuard keypairs for {node_count} nodes");
@@ -244,7 +260,11 @@ async fn run_inner(
         None, // No CP IP yet (it IS the CP)
     );
 
-    let cp_id = launch_instance(ec2, &args.ami_id, &cp_userdata, &keypair_name, &sg_id, &config.instance_type).await?;
+    let cp_node = &config.nodes[cp_index];
+    let cp_id = launch_instance(
+        ec2, &args.ami_id, &cp_userdata, &keypair_name, &sg_id,
+        &config.instance_type, &test_id, &cp_node.name, &cp_node.role,
+    ).await?;
     res.instance_ids.push(cp_id.clone());
 
     let (cp_private_ip, cp_public_ip) = wait_for_ips(ec2, &cp_id, deadline).await?;
@@ -257,6 +277,9 @@ async fn run_inner(
         node_ips.push((String::new(), String::new()));
     }
     node_ips[cp_index] = (cp_private_ip.clone(), cp_public_ip.clone());
+
+    // Launch all non-CP instances (fire launches quickly, collect IDs)
+    let mut pending: Vec<(usize, String, String)> = Vec::new(); // (config_index, node_name, instance_id)
 
     for (i, node) in config.nodes.iter().enumerate() {
         if i == cp_index {
@@ -272,12 +295,19 @@ async fn run_inner(
             Some(&cp_private_ip),
         );
 
-        let id = launch_instance(ec2, &args.ami_id, &userdata, &keypair_name, &sg_id, &config.instance_type).await?;
+        let id = launch_instance(
+            ec2, &args.ami_id, &userdata, &keypair_name, &sg_id,
+            &config.instance_type, &test_id, &node.name, &node.role,
+        ).await?;
         res.instance_ids.push(id.clone());
+        pending.push((i, node.name.clone(), id));
+    }
 
-        let (priv_ip, pub_ip) = wait_for_ips(ec2, &id, deadline).await?;
-        info!("  {}: {id} private={priv_ip}", node.name);
-        node_ips[i] = (priv_ip, pub_ip);
+    // Now wait for all IPs (instances are already booting in parallel)
+    for (i, name, id) in &pending {
+        let (priv_ip, pub_ip) = wait_for_ips(ec2, id, deadline).await?;
+        info!("  {name}: {id} private={priv_ip}");
+        node_ips[*i] = (priv_ip, pub_ip);
     }
 
     // 5. Wait for SSH on CP
@@ -388,7 +418,8 @@ async fn run_inner(
         total += 1;
         let client_public_ip = &node_ips[client_index].1;
         // Find the CP's VPN address from config (strip the /24 mask)
-        let cp_vpn_ip = config.nodes[cp_index].vpn_address.split('/').next().unwrap_or("10.99.0.1");
+        let cp_vpn_full = config.nodes[cp_index].vpn_addr();
+        let cp_vpn_ip = cp_vpn_full.split('/').next().unwrap_or("10.99.0.1");
         let client_kubectl_ok = ssh_poll(
             client_public_ip,
             &key_file,
@@ -442,7 +473,8 @@ fn build_userdata(
         .map(|(i, other)| {
             // Each peer gets its specific VPN IP as allowed_ips (not the whole subnet).
             // WireGuard only allows one peer per allowed_ips range.
-            let peer_ip = other.vpn_address.split('/').next().unwrap_or("10.99.0.0");
+            let peer_ip_full = other.vpn_addr();
+            let peer_ip = peer_ip_full.split('/').next().unwrap_or("10.99.0.0");
             let mut peer = serde_json::json!({
                 "public_key": all_keys[i].public_key,
                 "allowed_ips": [format!("{peer_ip}/32")],
@@ -450,7 +482,7 @@ fn build_userdata(
                 "persistent_keepalive": 25
             });
             // Non-CP nodes have CP's endpoint; CP has no endpoint (responds to incoming)
-            if node.node_index != 0 && i == 0 {
+            if !node.cluster_init && other.cluster_init {
                 if let Some(ip) = cp_private_ip {
                     peer["endpoint"] = serde_json::json!(format!("{ip}:51820"));
                 }
@@ -470,7 +502,7 @@ fn build_userdata(
             "require_liveness": false,
             "links": [{
                 "name": "wg-test",
-                "address": node.vpn_address,
+                "address": node.vpn_addr(),
                 "private_key_file": "/run/secrets.d/vpn-private-key",
                 "listen_port": 51820,
                 "persistent_keepalive": 25,
@@ -508,6 +540,9 @@ async fn launch_instance(
     keypair_name: &str,
     sg_id: &str,
     instance_type: &str,
+    test_id: &str,
+    node_name: &str,
+    node_role: &str,
 ) -> Result<String> {
     use base64::Engine;
     let userdata_b64 = base64::engine::general_purpose::STANDARD.encode(userdata);
@@ -546,7 +581,19 @@ async fn launch_instance(
                 .tags(
                     aws_sdk_ec2::types::Tag::builder()
                         .key("Name")
-                        .value("ami-forge-cluster-test")
+                        .value(format!("ami-forge-{node_name}"))
+                        .build(),
+                )
+                .tags(
+                    aws_sdk_ec2::types::Tag::builder()
+                        .key("ClusterTestId")
+                        .value(test_id)
+                        .build(),
+                )
+                .tags(
+                    aws_sdk_ec2::types::Tag::builder()
+                        .key("NodeRole")
+                        .value(node_role)
                         .build(),
                 )
                 .build(),
