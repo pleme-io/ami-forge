@@ -93,6 +93,33 @@ via `Before=k3s.service` systemd ordering.
 
 ---
 
+## Dual-Sentinel Role Selection
+
+cluster-test generates userdata with `"role": "server"` for control plane nodes
+and `"role": "agent"` for workers. On boot, kindling-init reads the role from
+userdata and writes exactly one sentinel file:
+
+- `/var/lib/kindling/server-mode` -- written when `role == "server"`
+- `/var/lib/kindling/agent-mode` -- written when `role == "agent"`
+
+The opposite sentinel is always removed to prevent stale state. If neither file
+exists (e.g. during AMI build with no userdata), neither K3s service starts.
+
+The blackmatter-kubernetes K3s NixOS module uses systemd `ConditionPathExists`
+on these files: `k3s.service` has `ConditionPathExists=/var/lib/kindling/server-mode`
+and `k3s-agent.service` has `ConditionPathExists=/var/lib/kindling/agent-mode`.
+systemd evaluates the condition before the service starts, so the correct K3s
+binary runs without any imperative `systemctl mask/enable` calls.
+
+**Why this replaced `systemctl mask/enable`:** The old approach called
+`systemctl mask k3s-agent && systemctl enable k3s` (or vice versa) during
+kindling-init. This raced with systemd's own service ordering -- if systemd
+tried to start k3s-agent.service before kindling-init had masked it, the wrong
+service could launch. Sentinel files with `ConditionPathExists` are evaluated
+atomically by systemd at service start time, eliminating the race.
+
+---
+
 ## Error Handling
 
 - AWS credentials validated **before** any Packer invocation (fail fast)
