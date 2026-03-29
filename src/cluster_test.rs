@@ -1172,6 +1172,7 @@ mod tests {
                 kubectl_from_client: false,
             },
             region: "us-east-1".to_string(),
+            instance_profile_name: None,
         }
     }
 
