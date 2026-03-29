@@ -358,6 +358,11 @@ pub struct ClusterTestConfig {
     pub checks: CheckConfig,
     #[serde(default = "default_region")]
     pub region: String,
+    /// IAM instance profile name for EC2 tag-based state reporting.
+    /// Deployed via Pangea IaC. When set, instances can tag themselves
+    /// with BootstrapPhase, enabling tag-based polling instead of SSH.
+    #[serde(default)]
+    pub instance_profile_name: Option<String>,
 }
 
 fn default_region() -> String {
@@ -568,56 +573,64 @@ async fn run_inner(
         .await
         .context("authorize_security_group_ingress (ssh) failed")?;
 
-    // 3b. Create IAM role + instance profile (allows ec2:CreateTags on self)
-    info!("Creating IAM instance profile for tag-based bootstrap polling");
-    let iam = aws_sdk_iam::Client::new(aws_config);
-    let role_name = format!("ami-forge-test-{}", test_id);
-    let profile_name = role_name.clone();
+    // 3b. Resolve IAM instance profile — prefer pre-deployed (Pangea IaC),
+    //     fall back to creating ephemeral IAM at runtime.
+    let profile_name = if let Some(ref pre_deployed) = config.instance_profile_name {
+        info!("Using pre-deployed IAM instance profile: {pre_deployed}");
+        pre_deployed.clone()
+    } else {
+        info!("No instance_profile_name in config — creating ephemeral IAM");
+        let iam = aws_sdk_iam::Client::new(aws_config);
+        let role_name = format!("ami-forge-test-{}", test_id);
+        let ephemeral_profile = role_name.clone();
 
-    iam.create_role()
-        .role_name(&role_name)
-        .assume_role_policy_document(
-            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#,
-        )
-        .tags(
-            aws_sdk_iam::types::Tag::builder()
-                .key("ManagedBy")
-                .value("ami-forge")
-                .build()
-                .context("failed to build IAM tag")?,
-        )
-        .send()
-        .await
-        .context("IAM CreateRole failed")?;
-    res.role_name = Some(role_name.clone());
+        iam.create_role()
+            .role_name(&role_name)
+            .assume_role_policy_document(
+                r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#,
+            )
+            .tags(
+                aws_sdk_iam::types::Tag::builder()
+                    .key("ManagedBy")
+                    .value("ami-forge")
+                    .build()
+                    .context("failed to build IAM tag")?,
+            )
+            .send()
+            .await
+            .context("IAM CreateRole failed")?;
+        res.role_name = Some(role_name.clone());
 
-    iam.put_role_policy()
-        .role_name(&role_name)
-        .policy_name("tag-self")
-        .policy_document(
-            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:CreateTags","Resource":"*","Condition":{"StringEquals":{"ec2:ResourceTag/ManagedBy":"ami-forge"}}}]}"#,
-        )
-        .send()
-        .await
-        .context("IAM PutRolePolicy failed")?;
+        iam.put_role_policy()
+            .role_name(&role_name)
+            .policy_name("tag-self")
+            .policy_document(
+                r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:CreateTags","Resource":"*","Condition":{"StringEquals":{"ec2:ResourceTag/ManagedBy":"ami-forge"}}}]}"#,
+            )
+            .send()
+            .await
+            .context("IAM PutRolePolicy failed")?;
 
-    iam.create_instance_profile()
-        .instance_profile_name(&profile_name)
-        .send()
-        .await
-        .context("IAM CreateInstanceProfile failed")?;
-    res.profile_name = Some(profile_name.clone());
+        iam.create_instance_profile()
+            .instance_profile_name(&ephemeral_profile)
+            .send()
+            .await
+            .context("IAM CreateInstanceProfile failed")?;
+        res.profile_name = Some(ephemeral_profile.clone());
 
-    iam.add_role_to_instance_profile()
-        .instance_profile_name(&profile_name)
-        .role_name(&role_name)
-        .send()
-        .await
-        .context("IAM AddRoleToInstanceProfile failed")?;
+        iam.add_role_to_instance_profile()
+            .instance_profile_name(&ephemeral_profile)
+            .role_name(&role_name)
+            .send()
+            .await
+            .context("IAM AddRoleToInstanceProfile failed")?;
 
-    // IAM is eventually consistent — wait for propagation
-    info!("Waiting 10s for IAM propagation");
-    tokio::time::sleep(Duration::from_secs(10)).await;
+        // IAM is eventually consistent — wait for propagation
+        info!("Waiting 10s for IAM propagation");
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        ephemeral_profile
+    };
 
     // 4. Launch CP instance first (others need its IP)
     let role_summary: Vec<_> = config.nodes.iter().map(|n| format!("{} ({})", n.name, n.role)).collect();
@@ -643,7 +656,7 @@ async fn run_inner(
     let cp_id = launch_instance(
         ec2, &args.ami_id, &cp_userdata, &keypair_name, &sg_id,
         &config.instance_type, &test_id, &cp_node.name, &cp_node.role,
-        &profile_name,
+        Some(profile_name.as_str()),
     ).await?;
     res.instance_ids.push(cp_id.clone());
 
@@ -678,7 +691,7 @@ async fn run_inner(
         let id = launch_instance(
             ec2, &args.ami_id, &userdata, &keypair_name, &sg_id,
             &config.instance_type, &test_id, &node.name, &node.role,
-            &profile_name,
+            Some(profile_name.as_str()),
         ).await?;
         res.instance_ids.push(id.clone());
         pending.push((i, node.name.clone(), id));
@@ -909,7 +922,7 @@ async fn launch_instance(
     test_id: &str,
     node_name: &str,
     node_role: &str,
-    iam_profile_name: &str,
+    iam_profile_name: Option<&str>,
 ) -> Result<String> {
     use base64::Engine;
     let userdata_b64 = base64::engine::general_purpose::STANDARD.encode(userdata);
@@ -918,20 +931,23 @@ async fn launch_instance(
         .parse()
         .unwrap_or(aws_sdk_ec2::types::InstanceType::T3Large);
 
-    // Use network_interfaces to ensure public IP assignment.
-    // When specifying network_interfaces, security groups go in the
-    // interface (not at the top level).
-    let resp = ec2
+    let mut req = ec2
         .run_instances()
         .image_id(ami_id)
         .instance_type(it)
         .key_name(keypair_name)
-        .iam_instance_profile(
+        .user_data(&userdata_b64);
+
+    // Attach IAM instance profile if provided (Pangea IaC-deployed)
+    if let Some(profile) = iam_profile_name {
+        req = req.iam_instance_profile(
             aws_sdk_ec2::types::IamInstanceProfileSpecification::builder()
-                .name(iam_profile_name)
+                .name(profile)
                 .build(),
-        )
-        .user_data(&userdata_b64)
+        );
+    }
+
+    let resp = req
         .min_count(1)
         .max_count(1)
         .network_interfaces(
