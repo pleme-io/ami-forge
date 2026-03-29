@@ -382,13 +382,13 @@ async fn run_inner(
     // peers with non-zero latest-handshake (field 6 in peer lines).
     total += 1;
     let min_hs = config.checks.min_vpn_handshakes;
-    // Use `wg show all transfer` which outputs: interface\tpeer\trx\ttx
-    // Count peers with non-zero rx (they received data = handshake established)
+    // Count peers with "latest handshake" in human-readable wg show output.
+    // This is the most reliable check — if "latest handshake" appears, the peer has connected.
     let vpn_ok = ssh_poll(
         &cp_public_ip,
         &key_file,
         &format!(
-            "test $(wg show all transfer 2>/dev/null | awk '{{if($3>0)c++}}END{{print c+0}}') -ge {min_hs}"
+            "test $(wg show all 2>/dev/null | grep -c 'latest handshake') -ge {min_hs}"
         ),
         deadline,
         Duration::from_secs(5),
@@ -425,17 +425,25 @@ async fn run_inner(
         let cp_vpn_full = config.nodes[cp_index].vpn_addr();
         let cp_vpn_ip = cp_vpn_full.split('/').next().unwrap_or("10.99.0.1");
 
-        // Copy kubeconfig from CP to client via SSH relay
-        let kubeconfig = ssh_output(&cp_public_ip, &key_file, "cat /etc/rancher/k3s/k3s.yaml 2>/dev/null").await;
-        if !kubeconfig.is_empty() {
-            // Write kubeconfig to client, rewriting server URL to CP's VPN IP
+        // Copy kubeconfig from CP to client:
+        // 1. Read kubeconfig from CP via SSH (to our machine)
+        // 2. Rewrite server URL
+        // 3. Write to client via SSH
+        let kubeconfig = ssh_output(&cp_public_ip, &key_file, "cat /etc/rancher/k3s/k3s.yaml").await;
+        if !kubeconfig.trim().is_empty() {
             let rewritten = kubeconfig.replace("127.0.0.1", cp_vpn_ip).replace("localhost", cp_vpn_ip);
-            let escaped = rewritten.replace('\'', "'\\''");
+            // Base64 encode to avoid shell escaping issues
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(rewritten.as_bytes());
+            let _ = ssh_check(client_public_ip, &key_file, "mkdir -p /root/.kube").await;
             let _ = ssh_check(
                 client_public_ip,
                 &key_file,
-                &format!("mkdir -p /root/.kube && echo '{escaped}' > /root/.kube/config"),
+                &format!("echo '{b64}' | base64 -d > /root/.kube/config"),
             ).await;
+            info!("Copied kubeconfig to client (server rewritten to {cp_vpn_ip})");
+        } else {
+            warn!("Could not read kubeconfig from CP");
         }
 
         let client_kubectl_ok = ssh_poll(
