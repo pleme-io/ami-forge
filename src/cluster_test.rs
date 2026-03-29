@@ -357,12 +357,15 @@ async fn run_inner(
     }
 
     // Check 3: K3s cluster (FIRST — longest wait, gives VPN time to establish)
+    // Use a dedicated 600s deadline for K3s — etcd init can take 15-20 min on t3,
+    // the global deadline is too short after instance setup consumed most of it.
     total += 1;
     let min_ready = config.checks.min_ready_nodes;
+    let k3s_deadline = Instant::now() + Duration::from_secs(600);
     let k3s_check = format!(
         "test $(kubectl get nodes --no-headers 2>/dev/null | grep -c Ready) -ge {min_ready}"
     );
-    let k3s_ok = ssh_poll(&cp_public_ip, &key_file, &k3s_check, deadline, Duration::from_secs(10)).await;
+    let k3s_ok = ssh_poll(&cp_public_ip, &key_file, &k3s_check, k3s_deadline, Duration::from_secs(10)).await;
     if k3s_ok {
         passed += 1;
         let node_info = ssh_output(&cp_public_ip, &key_file, "kubectl get nodes --no-headers").await;
