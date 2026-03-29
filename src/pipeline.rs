@@ -31,23 +31,18 @@ pub struct PipelineConfig {
     #[serde(default = "default_region")]
     pub region: String,
     #[serde(default)]
-    pub skip_cluster_test: bool,
-    #[serde(default = "default_cluster_test_instance_type")]
-    pub cluster_test_instance_type: String,
-    #[serde(default = "default_cluster_test_timeout")]
-    pub cluster_test_timeout: u64,
+    pub cluster_test: Option<ClusterTestRef>,
     #[serde(default = "default_manifest")]
     pub manifest: PathBuf,
 }
 
+#[derive(Deserialize)]
+pub struct ClusterTestRef {
+    pub config: PathBuf,
+}
+
 fn default_region() -> String {
     "us-east-1".into()
-}
-fn default_cluster_test_instance_type() -> String {
-    "c7i.xlarge".into()
-}
-fn default_cluster_test_timeout() -> u64 {
-    480
 }
 fn default_manifest() -> PathBuf {
     PathBuf::from("packer-manifest.json")
@@ -73,7 +68,7 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
         );
     }
 
-    let total_phases = if config.skip_cluster_test { 4 } else { 5 };
+    let total_phases = if config.cluster_test.is_none() { 4 } else { 5 };
 
     // Validate AWS credentials early
     let aws_config = crate::aws::load_config(&config.region).await;
@@ -106,13 +101,11 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
     }
 
     // ── Phase 4: Multi-node cluster test ────────────────────────
-    if !config.skip_cluster_test {
+    if let Some(ref ct) = config.cluster_test {
         info!("[4/{total_phases}] Running multi-node cluster integration test on {ami_id}");
         let cluster_args = crate::cluster_test::ClusterTestArgs {
+            config: ct.config.clone(),
             ami_id: ami_id.clone(),
-            region: config.region.clone(),
-            instance_type: config.cluster_test_instance_type.clone(),
-            timeout: config.cluster_test_timeout,
         };
         if let Err(e) = crate::cluster_test::run(cluster_args).await {
             error!("Cluster test FAILED: {e}");
@@ -121,7 +114,7 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
     }
 
     // ── Phase 5: Promote ────────────────────────────────────────
-    let promote_phase = if config.skip_cluster_test { 4 } else { 5 };
+    let promote_phase = if config.cluster_test.is_none() { 4 } else { 5 };
     info!("[{promote_phase}/{total_phases}] Promoting AMI {ami_id} to {}", config.ssm);
     let ssm_client = aws_sdk_ssm::Client::new(&aws_config);
     crate::aws::put_ssm_parameter(&ssm_client, &config.ssm, &ami_id).await?;
