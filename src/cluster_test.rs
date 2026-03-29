@@ -382,11 +382,13 @@ async fn run_inner(
     // peers with non-zero latest-handshake (field 6 in peer lines).
     total += 1;
     let min_hs = config.checks.min_vpn_handshakes;
+    // Use `wg show all transfer` which outputs: interface\tpeer\trx\ttx
+    // Count peers with non-zero rx (they received data = handshake established)
     let vpn_ok = ssh_poll(
         &cp_public_ip,
         &key_file,
         &format!(
-            "test $(wg show all dump 2>/dev/null | awk -F'\\t' 'NF>4 && $6>0 {{c++}} END {{print c+0}}') -ge {min_hs}"
+            "test $(wg show all transfer 2>/dev/null | awk '{{if($3>0)c++}}END{{print c+0}}') -ge {min_hs}"
         ),
         deadline,
         Duration::from_secs(5),
