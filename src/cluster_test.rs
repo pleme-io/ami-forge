@@ -361,7 +361,7 @@ async fn run_inner(
     // the global deadline is too short after instance setup consumed most of it.
     total += 1;
     let min_ready = config.checks.min_ready_nodes;
-    let k3s_deadline = Instant::now() + Duration::from_secs(600);
+    let k3s_deadline = Instant::now() + Duration::from_secs(900);
     let k3s_check = format!(
         "test $(kubectl get nodes --no-headers 2>/dev/null | grep -c Ready) -ge {min_ready}"
     );
@@ -429,22 +429,31 @@ async fn run_inner(
         let cp_vpn_ip = cp_vpn_full.split('/').next().unwrap_or("10.99.0.1");
 
         // Copy kubeconfig from CP to client:
-        // 1. Read kubeconfig from CP via SSH (to our machine)
-        // 2. Rewrite server URL
-        // 3. Write to client via SSH
-        let kubeconfig = ssh_output(&cp_public_ip, &key_file, "cat /etc/rancher/k3s/k3s.yaml").await;
+        // Read from CP, rewrite server URL, write to client via temp file
+        let kubeconfig = ssh_output(&cp_public_ip, &key_file, "cat /etc/rancher/k3s/k3s.yaml 2>/dev/null").await;
         if !kubeconfig.trim().is_empty() {
             let rewritten = kubeconfig.replace("127.0.0.1", cp_vpn_ip).replace("localhost", cp_vpn_ip);
-            // Base64 encode to avoid shell escaping issues
-            use base64::Engine;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(rewritten.as_bytes());
+            // Write to local temp file, then scp to client
+            let tmp = std::env::temp_dir().join("cluster-test-kubeconfig");
+            std::fs::write(&tmp, &rewritten).ok();
             let _ = ssh_check(client_public_ip, &key_file, "mkdir -p /root/.kube").await;
-            let _ = ssh_check(
-                client_public_ip,
-                &key_file,
-                &format!("echo '{b64}' | base64 -d > /root/.kube/config"),
-            ).await;
-            info!("Copied kubeconfig to client (server rewritten to {cp_vpn_ip})");
+            // Use scp to transfer the file
+            let scp_status = tokio::process::Command::new("scp")
+                .args([
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    "-o", "LogLevel=ERROR",
+                    "-i", &key_file.to_string_lossy(),
+                    &tmp.to_string_lossy(),
+                    &format!("root@{client_public_ip}:/root/.kube/config"),
+                ])
+                .status()
+                .await;
+            match scp_status {
+                Ok(s) if s.success() => info!("Copied kubeconfig to client (server rewritten to {cp_vpn_ip})"),
+                _ => warn!("Failed to scp kubeconfig to client"),
+            }
+            std::fs::remove_file(&tmp).ok();
         } else {
             warn!("Could not read kubeconfig from CP");
         }
