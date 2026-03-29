@@ -96,7 +96,7 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
     let test_result = run_packer_build(&test_tpl, &[format!("source_ami={ami_id}")]);
 
     if let Err(e) = test_result {
-        error!("Single-node test FAILED: {e}");
+        error!("Single-node test FAILED: {e:#}");
         deregister_and_fail(&aws_config, &config.ami_name, &manifest_path, &ami_id).await?;
     }
 
@@ -108,7 +108,7 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
             ami_id: ami_id.clone(),
         };
         if let Err(e) = crate::cluster_test::run(cluster_args).await {
-            error!("Cluster test FAILED: {e}");
+            error!("Cluster test FAILED: {e:#}");
             deregister_and_fail(&aws_config, &config.ami_name, &manifest_path, &ami_id).await?;
         }
     }
