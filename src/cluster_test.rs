@@ -326,7 +326,7 @@ async fn run_inner(
         error!("[FAIL] cp-wireguard: no interface");
     }
 
-    // Check 3: min_ready_nodes
+    // Check 3: K3s cluster (FIRST — longest wait, gives VPN time to establish)
     total += 1;
     let min_ready = config.checks.min_ready_nodes;
     let k3s_check = format!(
@@ -347,7 +347,7 @@ async fn run_inner(
         error!("K3s debug:\n{node_info}");
     }
 
-    // Check 4: min_vpn_handshakes
+    // Check 4: VPN handshakes (runs AFTER K3s wait — by now keepalives are established)
     total += 1;
     let min_hs = config.checks.min_vpn_handshakes;
     let vpn_ok = ssh_poll(
@@ -357,7 +357,7 @@ async fn run_inner(
             "test $(wg show all latest-handshakes 2>/dev/null | awk '{{if($3>0)c++}}END{{print c+0}}') -ge {min_hs}"
         ),
         deadline,
-        Duration::from_secs(10),
+        Duration::from_secs(5),
     ).await;
     if vpn_ok {
         passed += 1;
@@ -383,23 +383,33 @@ async fn run_inner(
         error!("[FAIL] kubectl-cp: namespaces not accessible");
     }
 
-    // Check 6: kubectl from client node (if enabled)
+    // Check 6: kubectl from client node via CP's VPN IP (proves end-to-end VPN + API)
     if config.checks.kubectl_from_client {
         total += 1;
         let client_public_ip = &node_ips[client_index].1;
+        // Find the CP's VPN address from config (strip the /24 mask)
+        let cp_vpn_ip = config.nodes[cp_index].vpn_address.split('/').next().unwrap_or("10.99.0.1");
         let client_kubectl_ok = ssh_poll(
             client_public_ip,
             &key_file,
-            "kubectl get namespaces --no-headers 2>/dev/null | grep -q default",
+            &format!(
+                "kubectl --server https://{cp_vpn_ip}:6443 --insecure-skip-tls-verify get namespaces --no-headers 2>/dev/null | grep -q default"
+            ),
             deadline,
             Duration::from_secs(10),
         ).await;
         if client_kubectl_ok {
             passed += 1;
-            info!("[PASS] kubectl-client: client node can reach K3s API");
+            info!("[PASS] kubectl-client: client→VPN→CP K3s API works");
         } else {
-            error!("[FAIL] kubectl-client: client node cannot reach K3s API");
-            let client_debug = ssh_output(client_public_ip, &key_file, "kubectl get namespaces 2>&1; echo '---'; wg show all 2>&1; echo '---'; journalctl -u kindling-init -n 10 --no-pager").await;
+            error!("[FAIL] kubectl-client: client cannot reach CP K3s API via VPN");
+            let client_debug = ssh_output(
+                client_public_ip,
+                &key_file,
+                &format!(
+                    "kubectl --server https://{cp_vpn_ip}:6443 --insecure-skip-tls-verify get namespaces 2>&1; echo '---'; wg show all 2>&1; echo '---'; journalctl -u kindling-init -n 10 --no-pager"
+                ),
+            ).await;
             error!("Client debug:\n{client_debug}");
         }
     }
