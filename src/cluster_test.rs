@@ -221,7 +221,11 @@ async fn check_cp_wireguard(cp: &SshSession) -> CheckResult {
     }
 }
 
-async fn check_k3s_cluster(cp: &SshSession, min_ready: u32) -> CheckResult {
+async fn check_k3s_cluster(
+    cp: &SshSession,
+    min_ready: u32,
+    agent_sessions: &[(&str, &SshSession)],
+) -> CheckResult {
     let start = Instant::now();
     let k3s_deadline = Instant::now() + Duration::from_secs(900);
     let k3s_check = format!(
@@ -233,9 +237,26 @@ async fn check_k3s_cluster(cp: &SshSession, min_ready: u32) -> CheckResult {
         let ready_count = node_info.lines().filter(|l| l.contains("Ready")).count();
         CheckResult::pass("k3s-cluster", format!("{ready_count} nodes Ready"), start)
     } else {
-        let debug = cp.output(
+        // Collect CP-side diagnostics
+        let mut debug = cp.output(
             "kubectl get nodes --no-headers 2>&1; echo '---'; journalctl -u k3s -n 20 --no-pager",
         ).await;
+
+        // Collect agent-side diagnostics from each non-CP node
+        for (name, session) in agent_sessions {
+            debug.push_str(&format!("\n\n=== Agent diagnostics: {} ===\n", name));
+            debug.push_str("--- systemctl status k3s-agent ---\n");
+            debug.push_str(&session.output("systemctl status k3s-agent.service 2>&1 || true").await);
+            debug.push_str("\n--- journalctl -u k3s-agent (last 30 lines) ---\n");
+            debug.push_str(&session.output("journalctl -u k3s-agent --no-pager -n 30 2>&1 || true").await);
+            debug.push_str("\n--- /etc/rancher/k3s/config.yaml ---\n");
+            debug.push_str(&session.output("cat /etc/rancher/k3s/config.yaml 2>&1 || echo 'FILE NOT FOUND'").await);
+            debug.push_str("\n--- /var/lib/kindling/ sentinels ---\n");
+            debug.push_str(&session.output("ls -la /var/lib/kindling/ 2>&1 || echo 'DIR NOT FOUND'").await);
+            debug.push_str("\n--- kindling-init logs (last 15 lines) ---\n");
+            debug.push_str(&session.output("journalctl -u kindling-init --no-pager -n 15 2>&1 || true").await);
+        }
+
         CheckResult::fail(
             "k3s-cluster",
             format!("did not reach {min_ready} Ready nodes"),
@@ -722,6 +743,22 @@ async fn run_inner(
         None
     };
 
+    // Create SSH sessions to all non-CP agent nodes for diagnostics.
+    // These are used to capture k3s-agent logs if the cluster check fails.
+    let mut agent_sessions: Vec<(String, SshSession)> = Vec::new();
+    for (i, node) in config.nodes.iter().enumerate() {
+        if i == cp_index {
+            continue;
+        }
+        let pub_ip = &node_ips[i].1;
+        if !pub_ip.is_empty() {
+            agent_sessions.push((
+                node.name.clone(),
+                SshSession::new(pub_ip, &key_file),
+            ));
+        }
+    }
+
     // 7. Run validation checks
     info!("[cluster-test:7/7] Running cluster validation");
     let mut results: Vec<CheckResult> = Vec::new();
@@ -753,7 +790,11 @@ async fn run_inner(
     results.push(check_cp_wireguard(&cp_ssh).await);
 
     // Check 3: K3s cluster (longest wait, gives VPN time to establish)
-    results.push(check_k3s_cluster(&cp_ssh, config.checks.min_ready_nodes).await);
+    let agent_refs: Vec<(&str, &SshSession)> = agent_sessions
+        .iter()
+        .map(|(name, session)| (name.as_str(), session))
+        .collect();
+    results.push(check_k3s_cluster(&cp_ssh, config.checks.min_ready_nodes, &agent_refs).await);
 
     // Check 4: VPN handshakes (runs AFTER K3s wait — keepalives established)
     results.push(check_vpn_peering(&cp_ssh, config.checks.min_vpn_handshakes, deadline).await);
