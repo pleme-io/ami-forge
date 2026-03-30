@@ -125,15 +125,9 @@ pub async fn run(args: MultiLayerRunArgs) -> Result<()> {
         // Attic snapshot (REQUIRED -- cache must grow every run)
         if let Some(ref attic_cfg) = config.attic {
             info!("[attic] Snapshotting cache");
-            match attic::attic_snapshot(&ec2, &ssm, &res.instance_id, &attic_cfg.ssm).await {
-                Ok(()) => info!("[attic] Snapshot succeeded -- cache enriched for next run"),
-                Err(e) => {
-                    error!("[attic] SNAPSHOT FAILED: {e:#}");
-                    // Don't fail the pipeline if layers+tests passed,
-                    // but log prominently so we know the cache didn't grow
-                    warn!("[attic] This run did NOT enrich the cache -- next run will be slower");
-                }
-            }
+            attic::attic_snapshot(&ec2, &ssm, &res.instance_id, &attic_cfg.ssm).await
+                .context("[attic] SNAPSHOT FAILED -- cache did not grow, run is wasted")?;
+            info!("[attic] Snapshot succeeded -- cache enriched for next run");
         }
         let _ = attic::attic_teardown(&ec2, res).await;
     }
@@ -225,6 +219,16 @@ async fn run_layers(
             )
             .send()
             .await;
+
+        // After Layer 1: verify Attic is still alive (cache must have received NARs)
+        if step == 1 {
+            if let Some(res) = attic_res {
+                info!("[{step}/{total}] POST-LAYER-1: verifying Attic cache still healthy");
+                attic::attic_wait_healthy(&res.public_ip, 30).await
+                    .context("[attic] POST-LAYER-1 FAILED: cache died during build -- NARs not pushed, run is wasted")?;
+                info!("[{step}/{total}] POST-LAYER-1: Attic alive -- NARs should have been pushed");
+            }
+        }
 
         // Store in SSM
         crate::aws::put_ssm_parameter(ssm, &layer.ssm_parameter, &ami_id).await?;
