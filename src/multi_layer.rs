@@ -377,6 +377,9 @@ fn run_packer_init(template: &str) -> Result<()> {
 fn run_packer_build(template: &str, vars: &[String]) -> Result<()> {
     let mut cmd = Command::new("packer");
     cmd.arg("build");
+    // On error: clean up the builder instance instead of leaving it running.
+    // This prevents orphaned instances when Packer encounters provisioner errors.
+    cmd.args(["-on-error=cleanup"]);
     for var in vars {
         cmd.args(["-var", var]);
     }

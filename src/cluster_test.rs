@@ -931,12 +931,20 @@ async fn launch_instance(
         .parse()
         .unwrap_or(aws_sdk_ec2::types::InstanceType::T3Large);
 
+    // Safety: instance_initiated_shutdown_behavior = "terminate" ensures the
+    // instance self-terminates on OS shutdown. Combined with TTL tags, orphaned
+    // instances can be detected and reaped by a cleanup job.
+    let ttl_expiry = (chrono::Utc::now() + chrono::Duration::hours(2))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+
     let mut req = ec2
         .run_instances()
         .image_id(ami_id)
         .instance_type(it)
         .key_name(keypair_name)
-        .user_data(&userdata_b64);
+        .user_data(&userdata_b64)
+        .instance_initiated_shutdown_behavior(aws_sdk_ec2::types::ShutdownBehavior::Terminate);
 
     // Attach IAM instance profile if provided (Pangea IaC-deployed)
     if let Some(profile) = iam_profile_name {
@@ -982,6 +990,24 @@ async fn launch_instance(
                     aws_sdk_ec2::types::Tag::builder()
                         .key("NodeRole")
                         .value(node_role)
+                        .build(),
+                )
+                .tags(
+                    aws_sdk_ec2::types::Tag::builder()
+                        .key("ami-forge:ttl-hours")
+                        .value("2")
+                        .build(),
+                )
+                .tags(
+                    aws_sdk_ec2::types::Tag::builder()
+                        .key("ami-forge:expires-at")
+                        .value(&ttl_expiry)
+                        .build(),
+                )
+                .tags(
+                    aws_sdk_ec2::types::Tag::builder()
+                        .key("ami-forge:purpose")
+                        .value("cluster-test")
                         .build(),
                 )
                 .build(),
