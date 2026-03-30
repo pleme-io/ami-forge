@@ -225,9 +225,11 @@ async fn check_k3s_cluster(
     cp: &SshSession,
     min_ready: u32,
     agent_sessions: &[(&str, &SshSession)],
+    deadline: Instant,
 ) -> CheckResult {
     let start = Instant::now();
-    let k3s_deadline = Instant::now() + Duration::from_secs(900);
+    // Use the outer deadline but cap at 900s to avoid runaway waits
+    let k3s_deadline = deadline.min(Instant::now() + Duration::from_secs(900));
     let k3s_check = format!(
         "test $(kubectl get nodes --no-headers 2>/dev/null | grep -c Ready) -ge {min_ready}"
     );
@@ -255,6 +257,12 @@ async fn check_k3s_cluster(
             debug.push_str(&session.output("ls -la /var/lib/kindling/ 2>&1 || echo 'DIR NOT FOUND'").await);
             debug.push_str("\n--- kindling-init logs (last 15 lines) ---\n");
             debug.push_str(&session.output("journalctl -u kindling-init --no-pager -n 15 2>&1 || true").await);
+            debug.push_str("\n--- WireGuard state ---\n");
+            debug.push_str(&session.output("wg show all 2>&1 || echo 'NO WG'").await);
+            debug.push_str("\n--- ip addr (VPN interfaces) ---\n");
+            debug.push_str(&session.output("ip addr show 2>&1 | grep -A2 'wg-' || echo 'NO WG IFACE'").await);
+            debug.push_str("\n--- connectivity to CP K3s API ---\n");
+            debug.push_str(&session.output("timeout 3 bash -c 'echo | openssl s_client -connect $(grep server: /etc/rancher/k3s/config.yaml | head -1 | sed \"s|.*https://||\" | tr -d '\"') 2>&1 | head -5' || echo 'CONNECT FAILED'").await);
         }
 
         CheckResult::fail(
@@ -671,6 +679,7 @@ async fn run_inner(
         &keys,
         &psk,
         None, // No CP IP yet (it IS the CP)
+        None, // No VPN IP needed for CP
     );
 
     let cp_node = &config.nodes[cp_index];
@@ -695,6 +704,11 @@ async fn run_inner(
     // Launch all non-CP instances (fire launches quickly, collect IDs)
     let mut pending: Vec<(usize, String, String)> = Vec::new(); // (config_index, node_name, instance_id)
 
+    // CP VPN IP for join_server — agents join K3s through the VPN tunnel.
+    let cp_vpn_full = config.nodes[cp_index].vpn_addr();
+    let cp_vpn_ip = cp_vpn_full.split('/').next().unwrap_or("10.99.0.1");
+    info!("  CP VPN IP for join_server: {cp_vpn_ip} (EC2 private: {cp_private_ip})");
+
     for (i, node) in config.nodes.iter().enumerate() {
         if i == cp_index {
             continue;
@@ -707,6 +721,7 @@ async fn run_inner(
             &keys,
             &psk,
             Some(&cp_private_ip),
+            Some(cp_vpn_ip),
         );
 
         let id = launch_instance(
@@ -745,6 +760,7 @@ async fn run_inner(
 
     // Create SSH sessions to all non-CP agent nodes for diagnostics.
     // These are used to capture k3s-agent logs if the cluster check fails.
+    // We wait for SSH on each agent so diagnostic captures actually work.
     let mut agent_sessions: Vec<(String, SshSession)> = Vec::new();
     for (i, node) in config.nodes.iter().enumerate() {
         if i == cp_index {
@@ -752,10 +768,16 @@ async fn run_inner(
         }
         let pub_ip = &node_ips[i].1;
         if !pub_ip.is_empty() {
-            agent_sessions.push((
-                node.name.clone(),
-                SshSession::new(pub_ip, &key_file),
-            ));
+            let session = SshSession::new(pub_ip, &key_file);
+            info!("Waiting for SSH on agent node {} ({pub_ip})", node.name);
+            match session.wait_for_ssh(deadline).await {
+                Ok(()) => {
+                    agent_sessions.push((node.name.clone(), session));
+                }
+                Err(e) => {
+                    warn!("SSH not available on agent {}: {e} -- diagnostics will be limited", node.name);
+                }
+            }
         }
     }
 
@@ -794,7 +816,7 @@ async fn run_inner(
         .iter()
         .map(|(name, session)| (name.as_str(), session))
         .collect();
-    results.push(check_k3s_cluster(&cp_ssh, config.checks.min_ready_nodes, &agent_refs).await);
+    results.push(check_k3s_cluster(&cp_ssh, config.checks.min_ready_nodes, &agent_refs, deadline).await);
 
     // Check 4: VPN handshakes (runs AFTER K3s wait — keepalives established)
     results.push(check_vpn_peering(&cp_ssh, config.checks.min_vpn_handshakes, deadline).await);
@@ -878,6 +900,10 @@ async fn wait_for_phase_tags(
 ///
 /// Each node gets a VPN config with the CP as hub. The CP listens (no endpoint),
 /// all other nodes have the CP's private IP as endpoint with persistent_keepalive.
+///
+/// `cp_private_ip` -- the CP's EC2 private IP for WireGuard endpoint connectivity.
+/// `cp_vpn_ip` -- the CP's VPN IP for K3s `join_server` URL. Agents join K3s via
+/// the VPN tunnel so that the K3s server cert (which has VPN IPs as SANs) is valid.
 fn build_userdata(
     node: &NodeConfig,
     config: &ClusterTestConfig,
@@ -885,6 +911,7 @@ fn build_userdata(
     all_keys: &[wg::KeyPair],
     psk: &str,
     cp_private_ip: Option<&str>,
+    cp_vpn_ip: Option<&str>,
 ) -> String {
     // Build peer list: this node peers with all OTHER nodes
     let peers: Vec<serde_json::Value> = config.nodes.iter()
@@ -943,9 +970,12 @@ fn build_userdata(
         }
     });
 
-    // Non-CP nodes join the CP
+    // Non-CP nodes join the CP via its VPN address. Using VPN IP ensures the
+    // K3s server TLS cert (which includes VPN addresses as SANs) is valid for
+    // the connection. The WireGuard tunnel must be established first (the peer
+    // endpoint uses cp_private_ip for layer-3 connectivity).
     if !node.cluster_init {
-        if let Some(ip) = cp_private_ip {
+        if let Some(ip) = cp_vpn_ip {
             data["join_server"] = serde_json::json!(format!("https://{ip}:6443"));
         }
     }
@@ -1270,7 +1300,7 @@ mod tests {
         let keys: Vec<_> = (0..2).map(|_| wg::generate_keypair()).collect();
         let psk = wg::generate_psk();
 
-        let userdata = build_userdata(&config.nodes[0], &config, &keys[0].private_key, &keys, &psk, None);
+        let userdata = build_userdata(&config.nodes[0], &config, &keys[0].private_key, &keys, &psk, None, None);
         let parsed: serde_json::Value = serde_json::from_str(&userdata).unwrap();
 
         assert_eq!(parsed["cluster_init"], true);
@@ -1280,19 +1310,26 @@ mod tests {
     }
 
     #[test]
-    fn build_userdata_worker_has_join_server() {
+    fn build_userdata_worker_joins_via_vpn_ip() {
         let nodes = vec![cp_node(), worker_node(1)];
         let config = minimal_config(nodes);
         let keys: Vec<_> = (0..2).map(|_| wg::generate_keypair()).collect();
         let psk = wg::generate_psk();
-        let cp_ip = "172.31.0.10";
+        let cp_ec2_ip = "172.31.0.10";
+        let cp_vpn_ip = "10.99.0.1";
 
-        let userdata = build_userdata(&config.nodes[1], &config, &keys[1].private_key, &keys, &psk, Some(cp_ip));
+        let userdata = build_userdata(&config.nodes[1], &config, &keys[1].private_key, &keys, &psk, Some(cp_ec2_ip), Some(cp_vpn_ip));
         let parsed: serde_json::Value = serde_json::from_str(&userdata).unwrap();
 
         assert_eq!(parsed["cluster_init"], false);
-        assert_eq!(parsed["join_server"], format!("https://{cp_ip}:6443"));
+        // join_server uses VPN IP (not EC2 private IP) so K3s TLS cert SANs match
+        assert_eq!(parsed["join_server"], format!("https://{cp_vpn_ip}:6443"));
         assert_eq!(parsed["role"], "agent");
+
+        // WireGuard peer endpoint still uses EC2 private IP for layer-3 connectivity
+        let peers = parsed["vpn"]["links"][0]["peers"].as_array().unwrap();
+        let cp_peer = peers.iter().find(|p| p["endpoint"].is_string()).unwrap();
+        assert_eq!(cp_peer["endpoint"], format!("{cp_ec2_ip}:51820"));
     }
 
     #[test]
@@ -1305,7 +1342,8 @@ mod tests {
         // Check each node's peer list does not include its own public key
         for (i, node) in config.nodes.iter().enumerate() {
             let cp_ip = if i == 0 { None } else { Some("172.31.0.10") };
-            let userdata = build_userdata(node, &config, &keys[i].private_key, &keys, &psk, cp_ip);
+            let cp_vpn = if i == 0 { None } else { Some("10.99.0.1") };
+            let userdata = build_userdata(node, &config, &keys[i].private_key, &keys, &psk, cp_ip, cp_vpn);
             let parsed: serde_json::Value = serde_json::from_str(&userdata).unwrap();
 
             let peers = parsed["vpn"]["links"][0]["peers"].as_array().unwrap();
