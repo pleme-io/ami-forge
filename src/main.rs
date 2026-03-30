@@ -1,8 +1,10 @@
+mod attic;
 mod aws;
 mod boot_check;
 mod build;
 mod cluster_test;
 mod manifest;
+mod multi_layer;
 mod pipeline;
 mod promote;
 mod rotate;
@@ -52,6 +54,9 @@ enum Command {
 
     /// Multi-node cluster integration test: 2 instances, VPN peering, K3s cluster
     ClusterTest(cluster_test::ClusterTestArgs),
+
+    /// Run a multi-layer AMI pipeline: layer by layer with fingerprint caching
+    MultiLayerRun(multi_layer::MultiLayerRunArgs),
 }
 
 #[tokio::main]
@@ -74,5 +79,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Trigger(args) => trigger::run(args).await,
         Command::PipelineRun(args) => pipeline::run(args).await,
         Command::ClusterTest(args) => cluster_test::run(args).await,
+        Command::MultiLayerRun(args) => multi_layer::run(args).await,
     }
 }
