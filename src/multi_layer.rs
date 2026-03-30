@@ -82,36 +82,57 @@ pub async fn run(args: MultiLayerRunArgs) -> Result<()> {
     let ssm = aws_sdk_ssm::Client::new(&aws_config);
     let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
 
-    // Boot Attic (optional)
-    let mut attic_res: Option<attic::AtticResources> = None;
-    if let Some(ref attic_cfg) = config.attic {
-        info!("[attic] Booting ephemeral cache from {}", attic_cfg.ssm);
-        match attic::attic_boot(&ec2, &ssm, attic_cfg).await {
-            Ok(res) => match attic::attic_wait_healthy(&res.public_ip, 180).await {
-                Ok(()) => {
-                    info!("[attic] Cache ready at {}", res.private_ip);
-                    attic_res = Some(res);
-                }
-                Err(e) => {
-                    warn!("[attic] Health failed (degrading): {e:#}");
-                    let _ = attic::attic_teardown(&ec2, &res).await;
-                }
-            },
-            Err(e) => warn!("[attic] Boot failed (degrading): {e:#}"),
-        }
-    }
+    // Boot Attic (REQUIRED -- every run must use and contribute to the cache)
+    let attic_res = if let Some(ref attic_cfg) = config.attic {
+        info!("[attic] PRE-GATE: Booting ephemeral cache from {}", attic_cfg.ssm);
+        let res = attic::attic_boot(&ec2, &ssm, attic_cfg).await
+            .context("[attic] PRE-GATE FAILED: cache boot failed -- refusing to build without cache")?;
+        attic::attic_wait_healthy(&res.public_ip, 180).await
+            .map_err(|e| {
+                // Teardown the instance we booted before bailing
+                let ec2_clone = ec2.clone();
+                let res_clone_id = res.instance_id.clone();
+                tokio::spawn(async move {
+                    let _ = ec2_clone.terminate_instances().instance_ids(&res_clone_id).send().await;
+                });
+                e
+            })
+            .context("[attic] PRE-GATE FAILED: cache not healthy -- refusing to build without cache")?;
+        info!("[attic] PRE-GATE PASSED: cache ready at {}", res.private_ip);
+        Some(res)
+    } else {
+        bail!("[attic] No Attic config -- multi-layer pipeline requires cache for every run");
+    };
 
     // Run layers
     let result = run_layers(&config, &ec2, &ssm, &github_token, &attic_res).await;
 
-    // Attic snapshot (ALWAYS -- cache grows even on failure)
+    // Attic POST-GATE: verify cache is still alive after layers ran
     if let Some(ref res) = attic_res {
+        info!("[attic] POST-GATE: verifying cache still healthy");
+        if let Err(e) = attic::attic_wait_healthy(&res.public_ip, 30).await {
+            error!("[attic] POST-GATE FAILED: cache died during build -- NARs may not have been pushed: {e:#}");
+            let _ = attic::attic_teardown(&ec2, res).await;
+            // Still return the layer result (layers may have succeeded)
+            // but log the cache failure prominently
+            if result.is_ok() {
+                warn!("[attic] Layers passed but cache died -- this run did NOT contribute to the cache");
+            }
+        } else {
+            info!("[attic] POST-GATE PASSED: cache alive, snapshotting");
+        }
+
+        // Attic snapshot (REQUIRED -- cache must grow every run)
         if let Some(ref attic_cfg) = config.attic {
             info!("[attic] Snapshotting cache");
-            if let Err(e) =
-                attic::attic_snapshot(&ec2, &ssm, &res.instance_id, &attic_cfg.ssm).await
-            {
-                warn!("[attic] Snapshot failed (non-fatal): {e:#}");
+            match attic::attic_snapshot(&ec2, &ssm, &res.instance_id, &attic_cfg.ssm).await {
+                Ok(()) => info!("[attic] Snapshot succeeded -- cache enriched for next run"),
+                Err(e) => {
+                    error!("[attic] SNAPSHOT FAILED: {e:#}");
+                    // Don't fail the pipeline if layers+tests passed,
+                    // but log prominently so we know the cache didn't grow
+                    warn!("[attic] This run did NOT enrich the cache -- next run will be slower");
+                }
             }
         }
         let _ = attic::attic_teardown(&ec2, res).await;
