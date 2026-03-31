@@ -120,6 +120,53 @@ atomically by systemd at service start time, eliminating the race.
 
 ---
 
+## Orphan Prevention
+
+Multiple layers prevent EC2 instances from being left running after a failed build:
+
+1. **Packer `-on-error=cleanup`** -- All Packer build invocations include this flag.
+   When a provisioner fails, Packer terminates the builder instance and deletes
+   temporary resources instead of leaving the instance running for debugging.
+
+2. **`instance_initiated_shutdown_behavior = "terminate"`** -- Attic cache instances
+   (and cluster-test instances) are launched with shutdown-behavior set to terminate.
+   If the OS shuts down for any reason, the instance self-destructs.
+
+3. **TTL tags** -- Every instance launched by ami-forge gets two tags:
+   - `ami-forge:ttl-hours`: "4" (maximum expected lifetime)
+   - `ami-forge:expires-at`: ISO 8601 timestamp (UTC)
+
+   A cleanup job can scan for instances with expired TTL tags and terminate them.
+
+4. **Cluster test cleanup** -- The cluster-test code path always runs cleanup
+   (terminate instances, delete security group, delete keypair) regardless of
+   whether the test passed or failed. SG deletion retries up to 5 times with
+   backoff because instances may still be in "shutting-down" state.
+
+---
+
+## Diagnostic SSH Capture for Cluster Test Failures
+
+When the K3s cluster check fails during `cluster-test`, ami-forge captures
+diagnostic information from both the control plane and all agent nodes:
+
+**Control plane diagnostics** (always captured on failure):
+- `kubectl get nodes --no-headers`
+- `journalctl -u k3s -n 20`
+
+**Agent diagnostics** (captured from each non-CP node via SSH):
+- `systemctl status k3s-agent.service`
+- `journalctl -u k3s-agent -n 30`
+- `/etc/rancher/k3s/config.yaml` contents
+
+SSH sessions to agent nodes are established before running checks. If SSH is
+not available on an agent, a warning is logged but diagnostics from other
+nodes are still collected. All diagnostic output is included in the error
+message when the check fails, making it possible to debug cluster formation
+issues from the pipeline output alone.
+
+---
+
 ## Error Handling
 
 - AWS credentials validated **before** any Packer invocation (fail fast)
