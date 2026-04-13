@@ -83,6 +83,13 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
     let arn = crate::aws::validate_credentials(&aws_config).await?;
     info!("Pipeline starting as {arn}");
 
+    // ── Reap expired instances/AMIs before starting ────────────
+    info!("[reaper] Cleaning up expired ami-forge resources");
+    let ec2_for_reap = aws_sdk_ec2::Client::new(&aws_config);
+    if let Err(e) = crate::reaper::run_reaper(&ec2_for_reap).await {
+        warn!("[reaper] Cleanup failed (non-fatal): {e}");
+    }
+
     // ── Attic ephemeral cache (optional) ────────────────────────
     let mut attic_res: Option<attic::AtticResources> = None;
     if let Some(ref attic_cfg) = config.attic {

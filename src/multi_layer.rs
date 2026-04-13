@@ -82,6 +82,12 @@ pub async fn run(args: MultiLayerRunArgs) -> Result<()> {
     let ssm = aws_sdk_ssm::Client::new(&aws_config);
     let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
 
+    // Reap expired instances/AMIs before starting
+    info!("[reaper] Cleaning up expired ami-forge resources");
+    if let Err(e) = crate::reaper::run_reaper(&ec2).await {
+        warn!("[reaper] Cleanup failed (non-fatal): {e}");
+    }
+
     // Boot Attic (REQUIRED -- every run must use and contribute to the cache)
     let attic_res = if let Some(ref attic_cfg) = config.attic {
         info!("[attic] PRE-GATE: Booting ephemeral cache from {}", attic_cfg.ssm);

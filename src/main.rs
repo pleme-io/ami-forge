@@ -7,6 +7,7 @@ mod manifest;
 mod multi_layer;
 mod pipeline;
 mod promote;
+mod reaper;
 mod rotate;
 mod status;
 mod trigger;
@@ -39,6 +40,9 @@ enum Command {
 
     /// Promote an AMI by updating SSM parameter
     Promote(promote::PromoteArgs),
+
+    /// Terminate expired instances and deregister stale AMIs managed by ami-forge
+    Reaper(reaper::ReaperArgs),
 
     /// Deregister an AMI by name and delete its orphaned EBS snapshots
     Rotate(rotate::RotateArgs),
@@ -74,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Build(args) => build::run(args).await,
         Command::ManifestId(args) => manifest::run(args),
         Command::Promote(args) => promote::run(args).await,
+        Command::Reaper(args) => reaper::run(args).await,
         Command::Rotate(args) => rotate::run(args).await,
         Command::Status(args) => status::run(args).await,
         Command::Trigger(args) => trigger::run(args).await,
