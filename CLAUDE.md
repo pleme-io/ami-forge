@@ -15,6 +15,7 @@ Rust CLI, all orchestration logic, no shell scripts.
 | `build` | Manual/CI | Upload nix disk image, import as AMI, tag, update SSM |
 | `manifest-id` | `pipeline-run` | Parse packer-manifest.json, print AMI ID to stdout |
 | `promote` | `pipeline-run` | Update SSM parameter with AMI ID |
+| `reaper` | Scheduled/manual | Terminate expired instances + deregister stale AMIs (keep newest per group) |
 | `rotate` | `pipeline-run` (on failure) | Deregister AMI by name, delete orphaned EBS snapshots |
 | `status` | `nix run .#ami-status` | Show current AMI from SSM and EC2 metadata |
 | `trigger` | CI/CD | Start a CodeBuild build, optionally wait for completion |
@@ -132,11 +133,13 @@ Multiple layers prevent EC2 instances from being left running after a failed bui
    (and cluster-test instances) are launched with shutdown-behavior set to terminate.
    If the OS shuts down for any reason, the instance self-destructs.
 
-3. **TTL tags** -- Every instance launched by ami-forge gets two tags:
+3. **TTL tags + reaper** -- Every instance launched by ami-forge gets two tags:
    - `ami-forge:ttl-hours`: "4" (maximum expected lifetime)
    - `ami-forge:expires-at`: ISO 8601 timestamp (UTC)
 
-   A cleanup job can scan for instances with expired TTL tags and terminate them.
+   The `reaper` subcommand scans for instances with expired TTL tags and terminates
+   them. It also deregisters stale AMIs, keeping only the newest per name prefix.
+   Run `ami-forge reaper` (or `--dry-run` first) to clean up orphaned resources.
 
 4. **Cluster test cleanup** -- The cluster-test code path always runs cleanup
    (terminate instances, delete security group, delete keypair) regardless of
