@@ -12,21 +12,22 @@ pub struct ManifestIdArgs {
 }
 
 /// Parse manifest and print AMI ID to stdout (no logging).
+///
+/// Uses the pure `aws::extract_ami_id_from_manifest` helper so the
+/// extraction logic stays in lockstep with `parse_packer_manifest`.
+/// The only divergence from that wrapper is the absent `info!` call —
+/// this command's stdout is consumed by shell scripts (`AMI_ID=$(...)`)
+/// so extra noise on stdout is off-limits; tracing goes to stderr and
+/// is suppressed at the call site anyway.
 pub fn run(args: ManifestIdArgs) -> anyhow::Result<()> {
-    // Use direct parsing without aws::parse_packer_manifest to avoid info! log
     let manifest = std::fs::read_to_string(&args.path)
         .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", args.path))?;
     let json: serde_json::Value = serde_json::from_str(&manifest)
         .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", args.path))?;
 
-    let ami_id = json["builds"]
-        .as_array()
-        .and_then(|builds| builds.last())
-        .and_then(|build| build["artifact_id"].as_str())
-        .and_then(|artifact| artifact.split(':').nth(1))
-        .ok_or_else(|| anyhow::anyhow!("could not extract AMI ID from {}", args.path))?;
+    let ami_id = crate::aws::extract_ami_id_from_manifest(&json)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", args.path))?;
 
-    // Print ONLY the AMI ID — no logging, no formatting
     print!("{ami_id}");
     Ok(())
 }
