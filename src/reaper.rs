@@ -236,9 +236,9 @@ async fn reap_stale_amis(
 /// Returns the prefix for grouping. If no timestamp suffix is found, returns
 /// the full name (it's a group of one).
 fn strip_timestamp_suffix(name: &str) -> String {
-    // Match pattern: name-YYYYMMDD-HHMMSS
+    // Match pattern: name-YYYYMMDD-HHMMSS  (-8-6 = 16 chars total)
     if name.len() >= 16 {
-        let candidate = &name[name.len() - 15..]; // "-YYYYMMDD-HHMMSS"
+        let candidate = &name[name.len() - 16..]; // "-YYYYMMDD-HHMMSS"
         if candidate.starts_with('-')
             && candidate[1..9].chars().all(|c| c.is_ascii_digit())
             && candidate[9..10].starts_with('-')
