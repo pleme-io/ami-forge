@@ -3,6 +3,7 @@ mod aws;
 mod boot_check;
 mod build;
 mod cluster_test;
+mod hardening_gate;
 mod manifest;
 mod multi_layer;
 mod pipeline;
@@ -61,6 +62,9 @@ enum Command {
 
     /// Run a multi-layer AMI pipeline: layer by layer with fingerprint caching
     MultiLayerRun(multi_layer::MultiLayerRunArgs),
+
+    /// Verify a kindling hardening report + emit a signed attestation
+    HardeningGate(hardening_gate::HardeningGateArgs),
 }
 
 #[tokio::main]
@@ -85,5 +89,6 @@ async fn main() -> anyhow::Result<()> {
         Command::PipelineRun(args) => pipeline::run(args).await,
         Command::ClusterTest(args) => cluster_test::run(args).await,
         Command::MultiLayerRun(args) => multi_layer::run(args).await,
+        Command::HardeningGate(args) => hardening_gate::run(args),
     }
 }

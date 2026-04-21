@@ -59,6 +59,13 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand = "0.9"
 base64 = "0.22"
 
+# Manifest digesting for hardening-gate signed attestation
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3.14"
+
 [lints.clippy]
 pedantic = "warn"
 
