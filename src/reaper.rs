@@ -23,7 +23,7 @@ async fn reap_expired_instances(
         .filters(
             aws_sdk_ec2::types::Filter::builder()
                 .name("tag:ManagedBy")
-                .values("ami-forge")
+                .values("pangea")
                 .build(),
         )
         .filters(
@@ -134,7 +134,7 @@ async fn reap_stale_amis(
         .filters(
             aws_sdk_ec2::types::Filter::builder()
                 .name("tag:ManagedBy")
-                .values("ami-forge")
+                .values("pangea")
                 .build(),
         )
         .send()

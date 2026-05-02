@@ -549,7 +549,7 @@ async fn run_inner(
                 .tags(
                     aws_sdk_ec2::types::Tag::builder()
                         .key("ManagedBy")
-                        .value("ami-forge")
+                        .value("pangea")
                         .build(),
                 )
                 .tags(
@@ -621,7 +621,7 @@ async fn run_inner(
             .tags(
                 aws_sdk_iam::types::Tag::builder()
                     .key("ManagedBy")
-                    .value("ami-forge")
+                    .value("pangea")
                     .build()
                     .context("failed to build IAM tag")?,
             )
@@ -634,7 +634,7 @@ async fn run_inner(
             .role_name(&role_name)
             .policy_name("tag-self")
             .policy_document(
-                r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:CreateTags","Resource":"*","Condition":{"StringEquals":{"ec2:ResourceTag/ManagedBy":"ami-forge"}}}]}"#,
+                r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:CreateTags","Resource":"*","Condition":{"StringEquals":{"ec2:ResourceTag/ManagedBy":"pangea"}}}]}"#,
             )
             .send()
             .await
@@ -1042,7 +1042,7 @@ async fn launch_instance(
                 .tags(
                     aws_sdk_ec2::types::Tag::builder()
                         .key("ManagedBy")
-                        .value("ami-forge")
+                        .value("pangea")
                         .build(),
                 )
                 .tags(

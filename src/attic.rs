@@ -107,7 +107,7 @@ pub async fn attic_boot(
                 .tags(
                     aws_sdk_ec2::types::Tag::builder()
                         .key("ManagedBy")
-                        .value("ami-forge")
+                        .value("pangea")
                         .build(),
                 )
                 .build(),
@@ -167,7 +167,7 @@ pub async fn attic_boot(
                 .tags(
                     aws_sdk_ec2::types::Tag::builder()
                         .key("ManagedBy")
-                        .value("ami-forge")
+                        .value("pangea")
                         .build(),
                 )
                 .tags(
