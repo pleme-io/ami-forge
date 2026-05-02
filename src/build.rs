@@ -272,7 +272,7 @@ async fn tag_ami(
 
     let managed_tag = aws_sdk_ec2::types::Tag::builder()
         .key("ManagedBy")
-        .value("ami-forge")
+        .value("pangea")
         .build();
 
     client
