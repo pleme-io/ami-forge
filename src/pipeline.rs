@@ -38,6 +38,12 @@ pub struct PipelineConfig {
     pub manifest: PathBuf,
     #[serde(default)]
     pub attic: Option<attic::AtticConfig>,
+    /// When true, after the SSM put add a public LaunchPermission so
+    /// any AWS account can launch the AMI without a per-account share.
+    /// Off by default — only flip on for artifacts known to carry no
+    /// secrets.
+    #[serde(default)]
+    pub make_public: bool,
 }
 
 #[derive(Deserialize)]
@@ -200,6 +206,11 @@ async fn run_pipeline_phases(
     info!("[{promote_phase}/{total_phases}] Promoting AMI {ami_id} to {}", config.ssm);
     let ssm_client = aws_sdk_ssm::Client::new(aws_config);
     crate::aws::put_ssm_parameter(&ssm_client, &config.ssm, &ami_id).await?;
+
+    if config.make_public {
+        let ec2_client = aws_sdk_ec2::Client::new(aws_config);
+        crate::aws::make_image_public(&ec2_client, &ami_id).await?;
+    }
 
     cleanup_manifest(&manifest_path);
     info!(

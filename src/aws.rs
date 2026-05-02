@@ -70,6 +70,37 @@ pub async fn put_ssm_parameter(
     Ok(())
 }
 
+/// Add a public launch permission to an AMI (`Group::All`).
+///
+/// After this call, any AWS account can launch the AMI without a
+/// per-account share. The AMI must be in the caller's account and
+/// region. Idempotent at AWS level — re-adding `Group::All` succeeds.
+///
+/// Use only for artifacts known to carry no secrets. The portao AMI
+/// qualifies: WireGuard private keys come from SSM at boot, never from
+/// the image.
+pub async fn make_image_public(
+    ec2: &aws_sdk_ec2::Client,
+    ami_id: &str,
+) -> anyhow::Result<()> {
+    let add_all = aws_sdk_ec2::types::LaunchPermission::builder()
+        .group(aws_sdk_ec2::types::PermissionGroup::All)
+        .build();
+    let modifications = aws_sdk_ec2::types::LaunchPermissionModifications::builder()
+        .add(add_all)
+        .build();
+
+    ec2.modify_image_attribute()
+        .image_id(ami_id)
+        .launch_permission(modifications)
+        .send()
+        .await
+        .context("ModifyImageAttribute (LaunchPermission Group=all) failed")?;
+
+    info!("AMI {ami_id} promoted to public (LaunchPermission Group=all)");
+    Ok(())
+}
+
 /// Extract the AMI ID from an already-parsed Packer manifest.
 ///
 /// The manifest format is: `{ "builds": [{ "artifact_id": "region:ami-xxx" }] }`
