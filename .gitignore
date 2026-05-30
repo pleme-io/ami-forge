@@ -7,3 +7,4 @@ Cargo.nix
 *~
 .direnv/
 .envrc
+Cargo.build-spec.json
