@@ -63,7 +63,7 @@ base64 = "0.22"
 sha2 = "0.10"
 hex = "0.4"
 
-[dev-dependencies]
+# GC-root protection for pipeline input paths (see pipeline::root_pipeline_inputs)
 tempfile = "3.14"
 
 [lints.clippy]
