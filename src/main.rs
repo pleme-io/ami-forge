@@ -1,19 +1,7 @@
-mod attic;
-mod aws;
-mod boot_check;
-mod build;
-mod cluster_test;
-mod hardening_gate;
-mod manifest;
-mod multi_layer;
-mod pipeline;
-mod promote;
-mod reaper;
-mod rotate;
-mod status;
-mod trigger;
-mod wg;
-
+use ami_forge::{
+    boot_check, build, cluster_test, hardening_gate, manifest, multi_layer, pipeline, promote,
+    reaper, rotate, status, trigger,
+};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
@@ -79,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::BootCheck(args) => boot_check::run(args),
-        Command::Build(args) => build::run(args).await,
+        Command::Build(args) => build::run(args).await.map(|_ami_id| ()),
         Command::ManifestId(args) => manifest::run(args),
         Command::Promote(args) => promote::run(args).await,
         Command::Reaper(args) => reaper::run(args).await,

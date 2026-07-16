@@ -15,31 +15,31 @@ use crate::rotate;
 pub struct BuildArgs {
     /// Path to nix build output directory (finds *.raw / *.img / *.vhd)
     #[arg(long)]
-    image: PathBuf,
+    pub image: PathBuf,
 
     /// S3 bucket for transit upload
     #[arg(long)]
-    bucket: String,
+    pub bucket: String,
 
     /// Constant AMI name (used for rotation + tagging)
     #[arg(long)]
-    ami_name: String,
+    pub ami_name: String,
 
     /// SSM parameter path to update with AMI ID
     #[arg(long)]
-    ssm: String,
+    pub ssm: String,
 
     /// AWS region
     #[arg(long, default_value = "us-east-1")]
-    region: String,
+    pub region: String,
 
     /// IAM role for vmimport (default: derived from ami-name)
     #[arg(long)]
-    role_name: Option<String>,
+    pub role_name: Option<String>,
 
     /// Import polling timeout in seconds
     #[arg(long, default_value_t = 1800)]
-    timeout: u64,
+    pub timeout: u64,
 }
 
 /// Locate the first disk image (*.raw, *.img, *.vhd) inside the given directory.
@@ -320,7 +320,14 @@ async fn cleanup_s3(
 }
 
 /// Orchestrate the full AMI build pipeline.
-pub async fn run(args: BuildArgs) -> anyhow::Result<()> {
+///
+/// Returns the imported AMI ID on success. This is the shared entry point
+/// consumed both by the `ami-forge build` CLI subcommand (below) and by
+/// igata's `amazon-import` builder (`igata::builder::amazon_import`), so
+/// `igata build <template>` can fold "upload a pre-built Nix disk image →
+/// import as AMI → tag → update SSM" in as one of its own build steps,
+/// with no separate manual `ami-forge build` invocation required.
+pub async fn run(args: BuildArgs) -> anyhow::Result<String> {
     // Step 1: Find the disk image
     let image_path = find_image(&args.image)?;
     info!("Found disk image: {}", image_path.display());
@@ -369,5 +376,5 @@ pub async fn run(args: BuildArgs) -> anyhow::Result<()> {
     cleanup_s3(&s3_client, &args.bucket, &s3_key).await?;
 
     info!("AMI build pipeline complete: {}", ami_id);
-    Ok(())
+    Ok(ami_id)
 }
