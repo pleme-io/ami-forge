@@ -141,10 +141,10 @@ pub async fn attic_boot(
     //
     // Safety: instance_initiated_shutdown_behavior = "terminate" ensures the
     // instance self-terminates on OS shutdown. Combined with TTL tags, orphaned
-    // instances can be detected and reaped by a cleanup job.
-    let ttl_expiry = (chrono::Utc::now() + chrono::Duration::hours(4))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    // instances can be detected and reaped by a cleanup job (reaper.rs, which
+    // filters on `ami-forge:expires-at` — see `crate::ttl`).
+    const ATTIC_TTL_HOURS: i64 = 4;
+    let ttl_expiry = crate::ttl::compute_expires_at(chrono::Utc::now(), ATTIC_TTL_HOURS);
     let resp = ec2
         .run_instances()
         .image_id(&ami_id)
@@ -172,13 +172,13 @@ pub async fn attic_boot(
                 )
                 .tags(
                     aws_sdk_ec2::types::Tag::builder()
-                        .key("ami-forge:ttl-hours")
-                        .value("4")
+                        .key(crate::ttl::TTL_HOURS_TAG_KEY)
+                        .value(ATTIC_TTL_HOURS.to_string())
                         .build(),
                 )
                 .tags(
                     aws_sdk_ec2::types::Tag::builder()
-                        .key("ami-forge:expires-at")
+                        .key(crate::ttl::EXPIRES_AT_TAG_KEY)
                         .value(&ttl_expiry)
                         .build(),
                 )
