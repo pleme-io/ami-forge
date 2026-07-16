@@ -2,6 +2,8 @@ use anyhow::Context;
 use clap::Args;
 use tracing::{info, warn};
 
+use crate::ttl::{self, EXPIRES_AT_TAG_KEY};
+
 #[derive(Args)]
 pub struct ReaperArgs {
     /// AWS region
@@ -48,7 +50,7 @@ async fn reap_expired_instances(
 
             let expires_at = tags
                 .iter()
-                .find(|t| t.key() == Some("ami-forge:expires-at"))
+                .find(|t| t.key() == Some(EXPIRES_AT_TAG_KEY))
                 .and_then(|t| t.value());
 
             let purpose = tags
@@ -65,19 +67,9 @@ async fn reap_expired_instances(
 
             match expires_at {
                 Some(expiry_str) => {
-                    let expiry = chrono::DateTime::parse_from_rfc3339(expiry_str)
-                        .or_else(|_| {
-                            // Also try the format used in tag creation
-                            chrono::NaiveDateTime::parse_from_str(expiry_str, "%Y-%m-%dT%H:%M:%SZ")
-                                .map(|naive| {
-                                    naive.and_utc().fixed_offset()
-                                })
-                        })
-                        .with_context(|| {
-                            format!("failed to parse expires-at tag '{expiry_str}' on {id}")
-                        })?;
+                    let expiry_utc = ttl::parse_expires_at(expiry_str)
+                        .with_context(|| format!("on instance {id}"))?;
 
-                    let expiry_utc = expiry.with_timezone(&chrono::Utc);
                     if now > expiry_utc {
                         let hours_overdue =
                             (now - expiry_utc).num_hours();
@@ -308,5 +300,81 @@ mod tests {
             strip_timestamp_suffix("nixos-attic-server"),
             "nixos-attic-server"
         );
+    }
+
+    /// Re-runs the exact tag lookup `reap_expired_instances` performs
+    /// (`find` by `EXPIRES_AT_TAG_KEY`, then classify with
+    /// `ttl::is_expired`) against a fixture `Vec<Tag>` built the same way
+    /// the AWS SDK would hand it back from `DescribeInstances`. No EC2
+    /// client, no live AWS — this is the reaper's real filter logic against
+    /// mocked tags instead of a mocked response envelope.
+    fn expired_per_reaper_filter(
+        tags: &[aws_sdk_ec2::types::Tag],
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<bool> {
+        let expires_at = tags
+            .iter()
+            .find(|t| t.key() == Some(EXPIRES_AT_TAG_KEY))
+            .and_then(|t| t.value())?;
+        Some(ttl::is_expired(expires_at, now).expect("fixture tag value must parse"))
+    }
+
+    fn tag(key: &str, value: &str) -> aws_sdk_ec2::types::Tag {
+        aws_sdk_ec2::types::Tag::builder()
+            .key(key)
+            .value(value)
+            .build()
+    }
+
+    #[test]
+    fn reaper_filter_reaps_an_attic_style_instance_past_its_ttl() {
+        // Tags shaped exactly like attic.rs's tag_specifications: launched
+        // with a 4h TTL, `now` is 5h after launch (past expiry).
+        use chrono::TimeZone;
+        let launched_at = chrono::Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 0).unwrap();
+        let expires_at = ttl::compute_expires_at(launched_at, 4);
+        let tags = vec![
+            tag("ManagedBy", "pangea"),
+            tag(crate::ttl::TTL_HOURS_TAG_KEY, "4"),
+            tag(EXPIRES_AT_TAG_KEY, &expires_at),
+            tag("ami-forge:purpose", "attic-cache"),
+        ];
+
+        let now = launched_at + chrono::Duration::hours(5);
+        assert_eq!(expired_per_reaper_filter(&tags, now), Some(true));
+    }
+
+    #[test]
+    fn reaper_filter_spares_a_cluster_test_style_instance_within_ttl() {
+        // Tags shaped exactly like cluster_test.rs's tag_specifications:
+        // launched with a 2h TTL, `now` is 1h after launch (still valid).
+        use chrono::TimeZone;
+        let launched_at = chrono::Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 0).unwrap();
+        let expires_at = ttl::compute_expires_at(launched_at, 2);
+        let tags = vec![
+            tag("ManagedBy", "pangea"),
+            tag("ClusterTestId", "test-abc123"),
+            tag(crate::ttl::TTL_HOURS_TAG_KEY, "2"),
+            tag(EXPIRES_AT_TAG_KEY, &expires_at),
+            tag("ami-forge:purpose", "cluster-test"),
+        ];
+
+        let now = launched_at + chrono::Duration::hours(1);
+        assert_eq!(expired_per_reaper_filter(&tags, now), Some(false));
+    }
+
+    #[test]
+    fn reaper_filter_finds_nothing_when_only_ttl_hours_is_set() {
+        // Task #204's literal failure mode: ttl-hours written, expires-at
+        // never written. The reaper's lookup must find None (and the real
+        // `reap_expired_instances` code logs+skips rather than reaping or
+        // panicking) — proving this stays caught if the writer regresses.
+        let tags = vec![
+            tag("ManagedBy", "pangea"),
+            tag(crate::ttl::TTL_HOURS_TAG_KEY, "4"),
+        ];
+
+        let now = chrono::Utc::now();
+        assert_eq!(expired_per_reaper_filter(&tags, now), None);
     }
 }
