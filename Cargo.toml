@@ -12,10 +12,6 @@ keywords = ["ami", "aws", "ec2", "nix", "devops"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = ["target/", "result-*", "Cargo.nix", "flake.*"]
 
-[lib]
-name = "ami_forge"
-path = "src/lib.rs"
-
 [[bin]]
 name = "ami-forge"
 path = "src/main.rs"
