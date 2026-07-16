@@ -5,10 +5,11 @@ use anyhow::{bail, Context, Result};
 use clap::Args;
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::process::Command;
 use tracing::{error, info, warn};
 
 use crate::attic;
+use crate::gcroot;
+use crate::packer::{run_packer_build, run_packer_init};
 
 #[derive(Args)]
 pub struct MultiLayerRunArgs {
@@ -48,6 +49,28 @@ fn default_region() -> String {
     "us-east-1".into()
 }
 
+/// Roots every layer template + every test-layer template for the whole
+/// multi-layer run — see `crate::gcroot` for why. Returns the `TempDir`;
+/// the caller MUST hold it alive until the pipeline finishes.
+fn root_multi_layer_inputs(config: &MultiLayerConfig) -> Result<tempfile::TempDir> {
+    let mut paths: Vec<(String, PathBuf)> = config
+        .layers
+        .iter()
+        .map(|l| (format!("layer-{}", l.name), l.template.clone()))
+        .collect();
+    paths.extend(
+        config
+            .test_layers
+            .iter()
+            .map(|t| (format!("test-layer-{}", t.name), t.template.clone())),
+    );
+    let refs: Vec<(&str, &std::path::Path)> = paths
+        .iter()
+        .map(|(name, path)| (name.as_str(), path.as_path()))
+        .collect();
+    gcroot::root_paths(&refs)
+}
+
 pub async fn run(args: MultiLayerRunArgs) -> Result<()> {
     let config_content = std::fs::read_to_string(&args.config)
         .with_context(|| format!("failed to read config: {}", args.config.display()))?;
@@ -73,6 +96,12 @@ pub async fn run(args: MultiLayerRunArgs) -> Result<()> {
             );
         }
     }
+
+    // Root every layer + test-layer template for the whole run (this
+    // pipeline commonly runs longer than the single-stage one — N layers
+    // each their own Packer build) — see `crate::gcroot` for why. Held
+    // alive (not `_`-dropped) for the rest of this function.
+    let _gcroots = root_multi_layer_inputs(&config)?;
 
     let aws_config = crate::aws::load_config(&config.region).await;
     let arn = crate::aws::validate_credentials(&aws_config).await?;
@@ -369,30 +398,3 @@ async fn check_layer_cache(
     }
 }
 
-fn run_packer_init(template: &str) -> Result<()> {
-    let status = Command::new("packer")
-        .args(["init", template])
-        .status()
-        .context("failed to execute packer init")?;
-    if !status.success() {
-        bail!("packer init failed for {template}");
-    }
-    Ok(())
-}
-
-fn run_packer_build(template: &str, vars: &[String]) -> Result<()> {
-    let mut cmd = Command::new("packer");
-    cmd.arg("build");
-    // On error: clean up the builder instance instead of leaving it running.
-    // This prevents orphaned instances when Packer encounters provisioner errors.
-    cmd.args(["-on-error=cleanup"]);
-    for var in vars {
-        cmd.args(["-var", var]);
-    }
-    cmd.arg(template);
-    let status = cmd.status().context("failed to execute packer build")?;
-    if !status.success() {
-        bail!("packer build failed for {template}");
-    }
-    Ok(())
-}

@@ -11,65 +11,26 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use tracing::{error, info, warn};
 
 use crate::attic;
-
-/// Pins a nix store path alive for the pipeline's lifetime via a real
-/// `nix-store` GC root, so a disk-pressure-triggered `nix-collect-garbage`
-/// running concurrently on the *evaluating* machine (not the remote AMI
-/// builder — this pipeline's own `build_template`/`test_template`/`config`
-/// paths live on whichever box invoked `ami-forge pipeline-run`) can never
-/// collect a path this run still needs between phases.
-///
-/// Root cause this closes: a `[1/N]` build phase pulling a large closure
-/// from a substituter can run long enough to cross a local GC's disk-
-/// pressure threshold; without a root, `test_template` (evaluated once at
-/// pipeline start, only re-touched at `[3/N]`) can vanish from the store
-/// in between — surfacing as `packer init failed: stat ... no such file or
-/// directory` at the test phase, long after the real cause (an unrelated
-/// GC sweep) has already happened and is invisible in the error itself.
-///
-/// `root_dir` must outlive every phase that reads the rooted paths — the
-/// caller holds its `tempfile::TempDir` for the whole pipeline run, not
-/// just this call.
-fn add_gc_root(store_path: &Path, root_dir: &Path, root_name: &str) -> Result<()> {
-    let root_link = root_dir.join(root_name);
-    let status = Command::new("nix-store")
-        .arg("--realise")
-        .arg(store_path)
-        .arg("--add-root")
-        .arg(&root_link)
-        .status()
-        .with_context(|| format!("failed to invoke nix-store --add-root for {}", store_path.display()))?;
-    if !status.success() {
-        bail!(
-            "nix-store --add-root failed for {} (exit {status}) -- \
-             this path may be collected by a concurrent GC before the pipeline reaches it",
-            store_path.display()
-        );
-    }
-    Ok(())
-}
+use crate::gcroot;
+use crate::packer::{run_packer_build, run_packer_init};
 
 /// Roots every pipeline-input path (`build_template`, `test_template`, and
-/// `cluster_test.config` when present) under one `TempDir` for the whole
-/// run. Returns the `TempDir` — the caller MUST hold it alive (not `_`-drop
-/// it) until the pipeline finishes; dropping it removes the gcroots
-/// directory and un-pins every path it protected.
+/// `cluster_test.config` when present) for the whole run — see
+/// `crate::gcroot` for why this is needed. Returns the `TempDir` — the
+/// caller MUST hold it alive (not `_`-drop it) until the pipeline finishes.
 fn root_pipeline_inputs(config: &PipelineConfig) -> Result<tempfile::TempDir> {
-    let root_dir = tempfile::Builder::new()
-        .prefix("ami-forge-gcroots-")
-        .tempdir()
-        .context("failed to create gcroots tempdir")?;
-    add_gc_root(&config.build_template, root_dir.path(), "build-template")?;
-    add_gc_root(&config.test_template, root_dir.path(), "test-template")?;
+    let mut paths = vec![
+        ("build-template", config.build_template.as_path()),
+        ("test-template", config.test_template.as_path()),
+    ];
     if let Some(ref ct) = config.cluster_test {
-        add_gc_root(&ct.config, root_dir.path(), "cluster-test-config")?;
+        paths.push(("cluster-test-config", ct.config.as_path()));
     }
-    Ok(root_dir)
+    gcroot::root_paths(&paths)
 }
 
 #[derive(Args)]
@@ -297,34 +258,6 @@ async fn deregister_and_fail(
     bail!("AMI pipeline failed -- AMI deregistered");
 }
 
-fn run_packer_init(template: &str) -> Result<()> {
-    let status = Command::new("packer")
-        .args(["init", template])
-        .status()
-        .context("failed to execute packer init")?;
-    if !status.success() {
-        bail!("packer init failed for {template}");
-    }
-    Ok(())
-}
-
-fn run_packer_build(template: &str, vars: &[String]) -> Result<()> {
-    let mut cmd = Command::new("packer");
-    cmd.arg("build");
-    // On error: clean up the builder instance instead of leaving it running.
-    // This prevents orphaned instances when Packer encounters provisioner errors.
-    cmd.args(["-on-error=cleanup"]);
-    for var in vars {
-        cmd.args(["-var", var]);
-    }
-    cmd.arg(template);
-    let status = cmd.status().context("failed to execute packer build")?;
-    if !status.success() {
-        bail!("packer build failed for {template}");
-    }
-    Ok(())
-}
-
 fn cleanup_manifest(path: &str) {
     if std::path::Path::new(path).exists() {
         if let Err(e) = std::fs::remove_file(path) {
@@ -336,96 +269,14 @@ fn cleanup_manifest(path: &str) {
 #[cfg(test)]
 mod gc_root_tests {
     use super::*;
+    use crate::gcroot::real_store_path_for_test;
 
-    /// A real, always-present nix store path to exercise `add_gc_root`
-    /// against — resolved from the `nix-store` binary itself via `PATH`,
-    /// not from this test binary's own `current_exe()`. `cargo test` is
-    /// commonly invoked directly (not via `nix build`/`nix run`), in which
-    /// case the test binary's own path sits under `target/debug/deps/...`,
-    /// NOT `/nix/store` — an earlier version of this test used
-    /// `current_exe()` and silently no-op'd (skipped) under a plain
-    /// `cargo test`, which is exactly the class of "green but proves
-    /// nothing" regression test this fix exists to avoid. `nix-store`
-    /// itself has to exist under `/nix/store` for the rest of this
-    /// pipeline to work at all (the whole point of `add_gc_root` is
-    /// calling the `nix-store` binary), so resolving IT via `PATH` is a
-    /// dependency this test already has either way, not an extra one.
-    ///
-    /// Deliberately returns the TOP-LEVEL `/nix/store/<hash>-<name>`
-    /// component, not a nested file within it (e.g. `nix-store`'s own
-    /// resolved binary lives at `.../determinate-nix-3.17.0/bin/nix` —
-    /// a file *inside* that package's output). This distinction is
-    /// load-bearing, not cosmetic: `nix-store --realise --add-root` on a
-    /// nested file roots the *containing* top-level store path, not the
-    /// exact file (caught live by this test's own first draft, which
-    /// asserted equality against the nested path and failed) — but every
-    /// REAL path `add_gc_root` roots in production (`build_template`/
-    /// `test_template`, both `pkgs.writeText` outputs per
-    /// `substrate/lib/infra/ami-build.nix`) is already a bare top-level
-    /// store path, never a file nested inside a larger derivation. Using
-    /// a top-level path here matches that shape.
-    fn real_store_path_for_test() -> Option<PathBuf> {
-        let which_output = Command::new("which").arg("nix-store").output().ok()?;
-        if !which_output.status.success() {
-            return None;
-        }
-        let nix_store_bin = PathBuf::from(String::from_utf8_lossy(&which_output.stdout).trim());
-        let canon = std::fs::canonicalize(&nix_store_bin).ok()?;
-        if !canon.starts_with("/nix/store") {
-            // nix isn't installed via the standard /nix/store layout on
-            // this machine -- skip rather than false-fail.
-            return None;
-        }
-        // Truncate to the top-level /nix/store/<hash>-<name> component --
-        // the 4th path component (["", "nix", "store", "<hash>-<name>"]).
-        let components: Vec<_> = canon.components().collect();
-        if components.len() < 4 {
-            None
-        } else {
-            Some(components[..4].iter().collect())
-        }
-    }
-
-    #[test]
-    fn add_gc_root_creates_a_resolvable_root_pointing_at_the_target() {
-        let Some(target) = real_store_path_for_test() else {
-            eprintln!("skipping: not running under a nix-built binary (no /nix/store exe path)");
-            return;
-        };
-        let root_dir = tempfile::Builder::new()
-            .prefix("ami-forge-gcroot-test-")
-            .tempdir()
-            .expect("tempdir");
-
-        add_gc_root(&target, root_dir.path(), "test-root").expect("add_gc_root should succeed against a real store path");
-
-        let root_link = root_dir.path().join("test-root");
-        assert!(root_link.exists(), "GC root symlink was not created at {}", root_link.display());
-        let resolved = std::fs::canonicalize(&root_link).expect("root link should resolve");
-        assert_eq!(
-            resolved, target,
-            "GC root at {} resolves to {} instead of the target {}",
-            root_link.display(),
-            resolved.display(),
-            target.display()
-        );
-
-        // The load-bearing regression proof: nix itself must now consider
-        // this path a live GC root, not just "a symlink exists on disk" —
-        // `nix-store --gc --print-roots` is the same query the real
-        // garbage collector consults before sweeping anything.
-        let output = Command::new("nix-store")
-            .args(["--gc", "--print-roots"])
-            .output()
-            .expect("failed to run nix-store --gc --print-roots");
-        let roots = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            roots.contains(&*target.to_string_lossy()),
-            "target path {} does not appear in nix-store's own GC roots listing -- \
-             the root we created would NOT actually protect it from a real collection",
-            target.display()
-        );
-    }
+    // `add_gc_root` itself (creates a resolvable root; nix-store's own
+    // `--gc --print-roots` actually sees it) is owned and tested once in
+    // `crate::gcroot` — no need to re-test it here. This module tests only
+    // `root_pipeline_inputs`'s OWN composition: that it correctly wires
+    // `build_template`/`test_template`/`cluster_test.config` into
+    // `gcroot::root_paths`.
 
     #[test]
     fn root_pipeline_inputs_roots_build_and_test_templates_together() {

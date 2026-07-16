@@ -1,6 +1,6 @@
 use ami_forge::{
     boot_check, build, cluster_test, hardening_gate, manifest, multi_layer, pipeline, promote,
-    reaper, rotate, status, trigger,
+    reaper, rotate, status, test_ami, trigger,
 };
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -53,6 +53,10 @@ enum Command {
 
     /// Verify a kindling hardening report + emit a signed attestation
     HardeningGate(hardening_gate::HardeningGateArgs),
+
+    /// Boot an already-built AMI and run its test template, without
+    /// rebuilding it (GC-root guarded, same as pipeline-run/multi-layer-run)
+    TestAmi(test_ami::TestAmiArgs),
 }
 
 #[tokio::main]
@@ -78,5 +82,6 @@ async fn main() -> anyhow::Result<()> {
         Command::ClusterTest(args) => cluster_test::run(args).await,
         Command::MultiLayerRun(args) => multi_layer::run(args).await,
         Command::HardeningGate(args) => hardening_gate::run(args),
+        Command::TestAmi(args) => test_ami::run(args),
     }
 }
