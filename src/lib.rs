@@ -27,6 +27,7 @@ pub mod packer;
 pub mod pipeline;
 pub mod test_ami;
 pub mod promote;
+pub mod reap_vpc;
 pub mod reaper;
 pub mod rotate;
 pub mod status;
