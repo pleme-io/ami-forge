@@ -1,6 +1,6 @@
 use ami_forge::{
     boot_check, build, cluster_test, hardening_gate, manifest, multi_layer, pipeline, promote,
-    reaper, rotate, status, test_ami, trigger,
+    reap_vpc, reaper, rotate, status, test_ami, trigger,
 };
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -32,6 +32,9 @@ enum Command {
 
     /// Terminate expired instances and deregister stale AMIs managed by ami-forge
     Reaper(reaper::ReaperArgs),
+
+    /// Reap orphan VPCs (0-ENI duplicate-CIDR VPCs left by failed IaC applies)
+    ReapVpc(reap_vpc::ReapVpcArgs),
 
     /// Deregister an AMI by name and delete its orphaned EBS snapshots
     Rotate(rotate::RotateArgs),
@@ -75,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         Command::ManifestId(args) => manifest::run(args),
         Command::Promote(args) => promote::run(args).await,
         Command::Reaper(args) => reaper::run(args).await,
+        Command::ReapVpc(args) => reap_vpc::run(args).await,
         Command::Rotate(args) => rotate::run(args).await,
         Command::Status(args) => status::run(args).await,
         Command::Trigger(args) => trigger::run(args).await,
