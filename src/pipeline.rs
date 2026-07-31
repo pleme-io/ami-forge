@@ -16,7 +16,7 @@ use tracing::{error, info, warn};
 
 use crate::attic;
 use crate::gcroot;
-use crate::packer::{run_packer_build, run_packer_init};
+use crate::packer::{run_packer_build, run_packer_build_with_secrets, run_packer_init};
 
 /// Roots every pipeline-input path (`build_template`, `test_template`, and
 /// `cluster_test.config` when present) for the whole run — see
@@ -178,7 +178,11 @@ async fn run_pipeline_phases(
     info!("[1/{total_phases}] Building AMI from base NixOS image");
     run_packer_init(&build_tpl)?;
 
-    let mut build_vars = vec![format!("github_token={github_token}")];
+    // The PAT goes through a 0600 var-file, NOT `-var` — see
+    // `run_packer_build_with_secrets`. Passing it as a CLI arg put the whole
+    // token in `ps` output for any local user.
+    let build_secrets = vec![("github_token".to_owned(), github_token.clone())];
+    let mut build_vars: Vec<String> = Vec::new();
     if let Some(ref res) = *attic_res {
         let cache_name = &config
             .attic
@@ -192,7 +196,7 @@ async fn run_pipeline_phases(
         ));
         info!("[attic] Passing substituter URL to Packer build (private IP)");
     }
-    run_packer_build(&build_tpl, &build_vars)?;
+    run_packer_build_with_secrets(&build_tpl, &build_vars, &build_secrets)?;
 
     // ── Phase 2: Extract AMI ID ─────────────────────────────────
     info!("[2/{total_phases}] Extracting AMI ID from manifest");

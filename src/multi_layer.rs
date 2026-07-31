@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 
 use crate::attic;
 use crate::gcroot;
-use crate::packer::{run_packer_build, run_packer_init};
+use crate::packer::{run_packer_build, run_packer_build_with_secrets, run_packer_init};
 
 #[derive(Args)]
 pub struct MultiLayerRunArgs {
@@ -208,7 +208,9 @@ async fn run_layers(
         run_packer_init(&tpl)?;
 
         // Build with vars
-        let mut vars = vec![format!("github_token={github_token}")];
+        // PAT via 0600 var-file, never argv — see run_packer_build_with_secrets.
+        let layer_secrets = vec![("github_token".to_owned(), github_token.to_owned())];
+        let mut vars: Vec<String> = Vec::new();
         if let Some(ref ami) = current_ami {
             vars.push(format!("source_ami={ami}"));
         }
@@ -229,7 +231,7 @@ async fn run_layers(
         // Clean old manifest
         let _ = std::fs::remove_file(&manifest);
 
-        run_packer_build(&tpl, &vars)?;
+        run_packer_build_with_secrets(&tpl, &vars, &layer_secrets)?;
 
         // Extract AMI ID
         let ami_id = crate::aws::parse_packer_manifest(&manifest)
