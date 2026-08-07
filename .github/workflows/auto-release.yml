@@ -1,0 +1,33 @@
+name: auto-release
+
+# Three-line consumer shim. Every push to main runs the pleme-io substrate
+# single-crate auto-release pipeline (bump → commit → tag → push → publish to
+# crates.io), plus the `drip` catch-up job that seals a skipped ship — a run
+# that publishes nothing must not report success.
+#
+# `cargo-auto-release.yml` (not `rust-auto-release.yml`): this repo is a SINGLE
+# crate with one `[[bin]]`, not a workspace. The workspace variant would look
+# for members that do not exist.
+#
+# WHY THIS ARRIVED LATE: the shim was absent, not broken. ami-forge was private
+# until 2026-08-07, and the reusable workflow gates both `ship` and `drip` on
+# `!github.event.repository.private` — so a shim added earlier would have run
+# green while publishing nothing, which is the failure mode `drip` exists to
+# make impossible. The repo going public is what makes this file load-bearing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump-type:
+        description: "patch | minor | major"
+        required: false
+        default: patch
+
+jobs:
+  release:
+    uses: pleme-io/substrate/.github/workflows/cargo-auto-release.yml@main
+    with:
+      bump-type: ${{ inputs.bump-type || 'patch' }}
+    secrets: inherit
