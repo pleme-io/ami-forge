@@ -10,8 +10,9 @@
 //! [`vpc_is_reapable`], unit-tested with no live AWS, so the safety logic is
 //! provable in isolation the way `reaper`'s TTL filter is. Dry-run is the
 //! default; `--apply` is required to actually delete. The 0-ENI gate alone
-//! spares any live VPC (the camelot-eks cluster VPC carries 35), and the
-//! keep-list is a second, explicit belt-and-suspenders guard.
+//! spares any live VPC — a VPC with a running cluster in it always carries
+//! interfaces — and the keep-list is a second, explicit belt-and-suspenders
+//! guard.
 
 use anyhow::Context;
 use clap::Args;
@@ -353,11 +354,11 @@ mod tests {
 
     #[test]
     fn spares_a_vpc_with_enis_even_if_it_matches() {
-        // The live cluster VPC matches Name + CIDR but carries ENIs — the
-        // 0-ENI gate is what protects it, independent of the keep-list.
-        let v = view("vpc-live", Some(NAME), CIDR, false, 35);
+        // An in-use VPC matches Name + CIDR but carries ENIs — the 0-ENI
+        // gate is what protects it, independent of the keep-list.
+        let v = view("vpc-live", Some(NAME), CIDR, false, 7);
         match vpc_is_reapable(&v, NAME, CIDR, &[]) {
-            ReapDecision::Skip(r) => assert!(r.contains("35 ENI"), "reason: {r}"),
+            ReapDecision::Skip(r) => assert!(r.contains("7 ENI"), "reason: {r}"),
             ReapDecision::Reap => panic!("must never reap a VPC with ENIs"),
         }
     }
