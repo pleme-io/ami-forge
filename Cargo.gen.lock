@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "5e63c372a2469443ea82aeb156b99a89f287154ced34a929221a5483e81c45c2",
+  "cargo_lock_sha256": "dc5c30bd45499595eaadb08441fadd5092c8ae1a7b82c35813b83501ecb90328",
   "manifest_sha256": {
-    "Cargo.toml": "5cdfdd23ce1f681dd948e0afb7d39b01748a12ed7cf97f1d327167ea6688040c"
+    "Cargo.toml": "a17de6c868e9709eb10f64db930774eae6424b3f7279c165671c596714518105"
   },
   "target_resolves": {
     "base": {
@@ -20,7 +20,7 @@
           "alloc"
         ]
       },
-      "ami-forge-0.2.3": {
+      "ami-forge-0.2.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -12972,7 +12972,7 @@
     "allocator-api2-0.2.21": {
       "edition": "2018"
     },
-    "ami-forge-0.2.3": {
+    "ami-forge-0.2.4": {
       "edition": "2024",
       "lib_target": {
         "name": "ami_forge",
