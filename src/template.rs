@@ -101,6 +101,30 @@ impl Ident {
 pub enum Arg {
     Literal(String),
     Env { env: Ident },
+    Parts { parts: Vec<ArgPart> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum ArgPart {
+    Literal(String),
+    Env { env: Ident },
+}
+
+impl ArgPart {
+    fn render(&self) -> String {
+        match self {
+            Self::Literal(s) => shell_quote(s),
+            Self::Env { env } => format!("\"${}\"", env.as_str()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum EnvPart {
+    Literal(String),
+    Var { var: Ident },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -126,6 +150,8 @@ impl Argv {
             .map(|a| match a {
                 Arg::Literal(s) => shell_quote(s),
                 Arg::Env { env } => format!("\"${}\"", env.as_str()),
+                Arg::Parts { parts } if parts.is_empty() => "''".to_owned(),
+                Arg::Parts { parts } => parts.iter().map(ArgPart::render).collect(),
             })
             .collect::<Vec<_>>()
             .join(" ")
@@ -151,6 +177,7 @@ pub enum ExecArg {
 pub enum EnvVar {
     Literal { name: Ident, value: String },
     Var { name: Ident, var: Ident },
+    Parts { name: Ident, parts: Vec<EnvPart> },
 }
 
 impl EnvVar {
@@ -160,7 +187,35 @@ impl EnvVar {
                 format!("{}={}", name.as_str(), packer_literal(value)?)
             }
             Self::Var { name, var } => format!("{}=${{var.{}}}", name.as_str(), var.as_str()),
+            Self::Parts { name, parts } => {
+                let mut out = format!("{}=", name.as_str());
+                for part in parts {
+                    match part {
+                        EnvPart::Literal(s) => out.push_str(&packer_literal(s)?),
+                        EnvPart::Var { var } => {
+                            out.push_str("${var.");
+                            out.push_str(var.as_str());
+                            out.push('}');
+                        }
+                    }
+                }
+                out
+            }
         })
+    }
+
+    fn referenced_vars(&self) -> Vec<&Ident> {
+        match self {
+            Self::Literal { .. } => vec![],
+            Self::Var { var, .. } => vec![var],
+            Self::Parts { parts, .. } => parts
+                .iter()
+                .filter_map(|p| match p {
+                    EnvPart::Var { var } => Some(var),
+                    EnvPart::Literal(_) => None,
+                })
+                .collect(),
+        }
     }
 }
 
@@ -186,10 +241,12 @@ impl Provisioner {
         if self.commands.is_empty() {
             return Err(TemplateError::EmptyCommands);
         }
-        for e in &self.environment_vars {
-            if let EnvVar::Var { var, .. } = e
-                && !declared.contains(&var.as_str())
-            {
+        for var in self
+            .environment_vars
+            .iter()
+            .flat_map(EnvVar::referenced_vars)
+        {
+            if !declared.contains(&var.as_str()) {
                 return Err(TemplateError::UndeclaredVariable {
                     variable: var.as_str().to_owned(),
                     which,
@@ -217,6 +274,48 @@ impl Provisioner {
         }
         Ok(json!({ "shell": Value::Object(shell) }))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileProvisioner {
+    pub destination: String,
+    pub content: String,
+}
+
+impl FileProvisioner {
+    fn render(&self) -> Result<Value, TemplateError> {
+        Ok(json!({ "file": {
+            "destination": packer_literal(&self.destination)?,
+            "content": file_content_literal(&self.content),
+        }}))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum Step {
+    File { file: FileProvisioner },
+    Shell(Provisioner),
+}
+
+impl Step {
+    fn render(
+        &self,
+        standard_env: &[String],
+        declared: &[&str],
+        which: &'static str,
+    ) -> Result<Value, TemplateError> {
+        match self {
+            Self::File { file } => file.render(),
+            Self::Shell(p) => p.render(standard_env, declared, which),
+        }
+    }
+}
+
+#[must_use]
+pub fn file_content_literal(s: &str) -> String {
+    hcl_escape(s).replace("{{", "{{\"{{\"}}")
 }
 
 fn render_execute_command(exec: &[ExecArg]) -> String {
@@ -400,7 +499,7 @@ pub struct BuildSpec {
     pub extra_tags: BTreeMap<String, String>,
     #[serde(default)]
     pub imds: Option<Imds>,
-    pub provisioners: Vec<Provisioner>,
+    pub provisioners: Vec<Step>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -422,7 +521,7 @@ pub struct TestSpec {
     pub environment: String,
     #[serde(default)]
     pub imds: Option<Imds>,
-    pub provisioners: Vec<Provisioner>,
+    pub provisioners: Vec<Step>,
 }
 
 fn finops_tags(
@@ -470,7 +569,7 @@ fn required_plugins() -> Value {
 }
 
 fn render_provisioners(
-    provisioners: &[Provisioner],
+    provisioners: &[Step],
     standard_env: &[String],
     declared: &[&str],
     which: &'static str,
@@ -900,12 +999,15 @@ execute_command: [sudo, -E, {placeholder: vars}, sh, {placeholder: path}]
         let nasty: Vec<Arg> = (0..40)
             .map(|_| Arg::Literal(nasty_string(&mut rng)))
             .collect();
-        build.provisioners[0].commands.push(Argv(
+        let Step::Shell(ref mut shell) = build.provisioners[0] else {
+            panic!("ceu spec starts with a shell step")
+        };
+        shell.commands.push(Argv(
             std::iter::once(Arg::Literal("printf".into()))
                 .chain(nasty)
                 .collect(),
         ));
-        build.provisioners[0].commands.push(Argv(vec![
+        shell.commands.push(Argv(vec![
             Arg::Literal("sh".into()),
             Arg::Literal("-c".into()),
             Arg::Literal(
@@ -1046,6 +1148,175 @@ execute_command: [sudo, -E, {placeholder: vars}, sh, {placeholder: path}]
                 .collect();
             got.pop();
             assert_eq!(&got, args, "case {i}");
+        }
+    }
+
+    const CEU_KINDLING_SPEC: &str = r#"
+ami_name: pleme-ceu
+flake_ref: "github:pleme-io/nix#ceu"
+region: us-east-2
+architecture: arm64
+volume_size: 200
+nix_build_opts: "--option max-jobs 8 --option cores 2"
+owner: pleme-io
+purpose: ceu akeyless relay AMI
+provisioners:
+  - file:
+      destination: /tmp/kindling-harden/base.yaml
+      content: "name: base\nminimize:\n  - strip-docs\non_failure: warn\n"
+  - file:
+      destination: /tmp/kindling-harden/hardened.yaml
+      content: "name: hardened\non_failure: abort\n"
+  - file:
+      destination: /tmp/kindling-harden/ami-snapshot.yaml
+      content: "name: ami-snapshot\non_failure: warn\n"
+  - expect_disconnect: false
+    environment_vars:
+      - name: NIX_CONFIG
+        parts: ["extra-experimental-features = nix-command flakes\naccess-tokens = github.com=", {var: github_token}]
+    commands:
+      - [nix, run, "github:pleme-io/kindling", --accept-flake-config, --,
+         ami-build, --flake-ref, {env: FLAKE_REF}, --action, boot, --image-kind, plain,
+         --harden, base, --harden, hardened, --harden, ami-snapshot,
+         --harden-profile-dir, /tmp/kindling-harden, --max-jobs, "8", --cores, "2"]
+"#;
+
+    #[test]
+    fn env_parts_and_arg_parts_render() {
+        let spec: BuildSpec = serde_yaml::from_str(CEU_KINDLING_SPEC).expect("spec");
+        let v = spec.render().expect("render");
+        let steps = &v["build"][0]["provisioner"];
+        assert_eq!(
+            steps[0]["file"]["destination"],
+            "/tmp/kindling-harden/base.yaml"
+        );
+        let env = steps[3]["shell"]["environment_vars"]
+            .as_array()
+            .expect("env");
+        assert_eq!(
+            env.last().expect("last"),
+            &json!(
+                "NIX_CONFIG=extra-experimental-features = nix-command flakes\naccess-tokens = github.com=${var.github_token}"
+            )
+        );
+        let p: Provisioner = serde_yaml::from_str(
+            "commands: [[echo, {parts: ['a=${x} ', {env: HOME}, \"'q'\"]}, {parts: []}]]",
+        )
+        .expect("p");
+        let line = p.render(&[], &[], "test").expect("render")["shell"]["inline"][0]
+            .as_str()
+            .expect("str")
+            .to_owned();
+        assert!(is_inert(&line), "{line}");
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(
+            sh_argv(line.trim_start_matches("echo ")),
+            vec![format!("a=${{x}} {home}'q'"), String::new()]
+        );
+        let undeclared: Provisioner = serde_yaml::from_str(
+            "commands: [[a]]\nenvironment_vars: [{name: X, parts: [a, {var: nope}]}]",
+        )
+        .expect("p");
+        assert!(matches!(
+            undeclared.render(&[], BUILD_VARIABLES, "build"),
+            Err(TemplateError::UndeclaredVariable { .. })
+        ));
+    }
+
+    const FILE_CONTENT: &str = "a ${x} %{y} {{timestamp}} {{\"{{\"}} q'\"\\ $$ \n\tz } { {{{ }}\n";
+
+    fn file_template(communicator: &Value, destination: &str) -> Value {
+        let file = FileProvisioner {
+            destination: destination.to_owned(),
+            content: FILE_CONTENT.to_owned(),
+        };
+        json!({
+            "source": { "null": { "x": communicator } },
+            "build": [{ "sources": ["source.null.x"], "provisioner": [file.render().expect("render")] }],
+        })
+    }
+
+    #[test]
+    fn file_provisioner_passes_full_packer_validate() {
+        let Some(packer) = packer() else {
+            eprintln!("skipping: packer not found");
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tmp");
+        let t = file_template(
+            &json!({"communicator": "ssh", "ssh_host": "127.0.0.1", "ssh_username": "x", "ssh_password": "x"}),
+            "/tmp/x",
+        );
+        let out = packer_run(&packer, "validate", &t, dir.path());
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    #[test]
+    fn file_provisioner_content_arrives_byte_exact() {
+        let (Some(packer), Ok(user)) = (packer(), std::env::var("AMI_FORGE_TEST_SSH_USER")) else {
+            eprintln!(
+                "skipping: needs packer and AMI_FORGE_TEST_SSH_USER (sshd on 127.0.0.1 accepting that user via ssh-agent)"
+            );
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tmp");
+        let dest = dir.path().join("uploaded");
+        let t = file_template(
+            &json!({"communicator": "ssh", "ssh_host": "127.0.0.1", "ssh_username": user, "ssh_agent_auth": true}),
+            &dest.to_string_lossy(),
+        );
+        let out = packer_run(&packer, "build", &t, dir.path());
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dest).expect("uploaded"),
+            FILE_CONTENT
+        );
+    }
+
+    #[test]
+    fn rendered_amazon_templates_pass_full_packer_validate() {
+        let (Some(packer), Some(plugins)) =
+            (packer(), std::env::var_os("AMI_FORGE_TEST_PACKER_PLUGINS"))
+        else {
+            eprintln!(
+                "skipping: needs packer and AMI_FORGE_TEST_PACKER_PLUGINS (a dir `packer init` filled with the amazon plugin)"
+            );
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tmp");
+        let build: BuildSpec = serde_yaml::from_str(CEU_KINDLING_SPEC).expect("spec");
+        let test: TestSpec = serde_yaml::from_str(CEU_TEST_SPEC).expect("spec");
+        for (name, v) in [
+            ("build.pkr.json", build.render().expect("render")),
+            ("test.pkr.json", test.render().expect("render")),
+        ] {
+            let path = write_rendered(&v, dir.path(), name).expect("write");
+            let mut cmd = std::process::Command::new(&packer);
+            cmd.arg("validate");
+            if name == "test.pkr.json" {
+                cmd.args(["-var", "source_ami=ami-00000000000000000"]);
+            }
+            let out = cmd
+                .arg(&path)
+                .env("PACKER_PLUGIN_PATH", &plugins)
+                .env("CHECKPOINT_DISABLE", "1")
+                .env("AWS_REGION", "us-east-2")
+                .output()
+                .expect("packer");
+            assert!(
+                out.status.success(),
+                "{name}: {}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
     }
 }
