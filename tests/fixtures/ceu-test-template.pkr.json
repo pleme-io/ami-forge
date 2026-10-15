@@ -1,0 +1,67 @@
+{
+  "build": [
+    {
+      "provisioner": {
+        "shell": {
+          "inline": [
+            "export PATH=/run/current-system/sw/bin:$PATH",
+            "test \"$(hostname)\" = ceu",
+            "test \"$(readlink -f /run/current-system)\" = \"$(readlink -f /nix/var/nix/profiles/system)\"",
+            "systemctl is-active sshd.service amazon-ssm-agent.service",
+            "systemctl cat cloud-age-key.service sops-install-secrets.service > /dev/null",
+            "test ! -e /var/lib/sops-nix/key.txt",
+            "nix-store --verify-path /run/current-system"
+          ]
+        }
+      },
+      "sources": [
+        "source.amazon-ebs.test"
+      ]
+    }
+  ],
+  "packer": {
+    "required_plugins": {
+      "amazon": {
+        "source": "github.com/hashicorp/amazon",
+        "version": ">= 1.3.0"
+      }
+    }
+  },
+  "source": {
+    "amazon-ebs": {
+      "test": {
+        "ami_name": "ami-forge-test-{{timestamp}}",
+        "associate_public_ip_address": true,
+        "instance_type": "t4g.medium",
+        "region": "${var.region}",
+        "run_tags": {
+          "Environment": "dev",
+          "Ephemeral": "true",
+          "ManagedBy": "pangea",
+          "Name": "ami-forge-test",
+          "Owner": "pleme-io",
+          "Purpose": "ceu AMI boot test",
+          "TtlHours": "2",
+          "ami-forge:purpose": "ami-test",
+          "ami-forge:ttl-hours": "2"
+        },
+        "shutdown_behavior": "terminate",
+        "skip_create_ami": true,
+        "source_ami": "${var.source_ami}",
+        "ssh_clear_authorized_keys": true,
+        "ssh_timeout": "10m",
+        "ssh_username": "root",
+        "temporary_key_pair_type": "ed25519"
+      }
+    }
+  },
+  "variable": {
+    "region": {
+      "default": "us-east-2",
+      "type": "string"
+    },
+    "source_ami": {
+      "type": "string"
+    }
+  }
+}

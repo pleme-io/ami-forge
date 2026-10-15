@@ -16,17 +16,24 @@ use tracing::{error, info, warn};
 
 use crate::attic;
 use crate::gcroot;
+use crate::template::{BuildSpec, TemplateSource, TestSpec};
 use crate::packer::{run_packer_build, run_packer_build_with_secrets, run_packer_init};
 
 /// Roots every pipeline-input path (`build_template`, `test_template`, and
 /// `cluster_test.config` when present) for the whole run — see
 /// `crate::gcroot` for why this is needed. Returns the `TempDir` — the
 /// caller MUST hold it alive (not `_`-drop it) until the pipeline finishes.
-fn root_pipeline_inputs(config: &PipelineConfig) -> Result<tempfile::TempDir> {
-    let mut paths = vec![
-        ("build-template", config.build_template.as_path()),
-        ("test-template", config.test_template.as_path()),
-    ];
+fn root_pipeline_inputs(
+    config: &PipelineConfig,
+    templates: &ResolvedTemplates,
+) -> Result<tempfile::TempDir> {
+    let mut paths = Vec::new();
+    if let Some(p) = templates.build.store_path() {
+        paths.push(("build-template", p));
+    }
+    if let Some(p) = templates.test.store_path() {
+        paths.push(("test-template", p));
+    }
     if let Some(ref ct) = config.cluster_test {
         paths.push(("cluster-test-config", ct.config.as_path()));
     }
@@ -42,8 +49,14 @@ pub struct PipelineRunArgs {
 
 #[derive(Deserialize)]
 pub struct PipelineConfig {
-    pub build_template: PathBuf,
-    pub test_template: PathBuf,
+    #[serde(default)]
+    pub build_template: Option<PathBuf>,
+    #[serde(default)]
+    pub build_spec: Option<BuildSpec>,
+    #[serde(default)]
+    pub test_template: Option<PathBuf>,
+    #[serde(default)]
+    pub test_spec: Option<TestSpec>,
     pub ssm: String,
     pub ami_name: String,
     #[serde(default = "default_region")]
@@ -67,6 +80,54 @@ pub struct ClusterTestRef {
     pub config: PathBuf,
 }
 
+pub struct ResolvedTemplates {
+    pub build: TemplateSource<BuildSpec>,
+    pub test: TemplateSource<TestSpec>,
+}
+
+impl PipelineConfig {
+    pub(crate) fn resolve_templates(&mut self) -> Result<ResolvedTemplates, crate::template::TemplateError> {
+        let build = TemplateSource::resolve(self.build_template.take(), self.build_spec.take(), "build")?;
+        let test = TemplateSource::resolve(self.test_template.take(), self.test_spec.take(), "test")?;
+        Ok(ResolvedTemplates { build, test })
+    }
+}
+
+pub struct TemplatePaths {
+    pub build: PathBuf,
+    pub test: PathBuf,
+    _rendered: tempfile::TempDir,
+}
+
+pub(crate) fn materialize_templates(templates: &ResolvedTemplates) -> Result<TemplatePaths> {
+    let rendered = tempfile::Builder::new()
+        .prefix("ami-forge-templates-")
+        .tempdir()
+        .context("failed to create rendered-template tempdir")?;
+    let build = match templates.build {
+        TemplateSource::Path(ref p) => p.clone(),
+        TemplateSource::Spec(ref s) => crate::template::write_rendered(
+            &s.render()?,
+            rendered.path(),
+            "build-template.pkr.json",
+        )?,
+    };
+    let test = match templates.test {
+        TemplateSource::Path(ref p) => p.clone(),
+        TemplateSource::Spec(ref s) => crate::template::write_rendered(
+            &s.render()?,
+            rendered.path(),
+            "test-template.pkr.json",
+        )?,
+    };
+    for (which, p) in [("Build", &build), ("Test", &test)] {
+        if !p.exists() {
+            bail!("{which} template not found: {}", p.display());
+        }
+    }
+    Ok(TemplatePaths { build, test, _rendered: rendered })
+}
+
 fn default_region() -> String {
     "us-east-1".into()
 }
@@ -81,27 +142,15 @@ fn default_manifest() -> PathBuf {
 pub async fn run(args: PipelineRunArgs) -> Result<()> {
     let config_content = std::fs::read_to_string(&args.config)
         .with_context(|| format!("failed to read pipeline config: {}", args.config.display()))?;
-    let config: PipelineConfig = serde_yaml::from_str(&config_content)
+    let mut config: PipelineConfig = serde_yaml::from_str(&config_content)
         .context("failed to parse pipeline config YAML")?;
-
-    // Validate inputs
-    if !config.build_template.exists() {
-        bail!(
-            "Build template not found: {}",
-            config.build_template.display()
-        );
-    }
-    if !config.test_template.exists() {
-        bail!(
-            "Test template not found: {}",
-            config.test_template.display()
-        );
-    }
+    let templates = config.resolve_templates()?;
+    let template_paths = materialize_templates(&templates)?;
 
     // Root every pipeline-input path for the whole run -- held alive in
     // `_gcroots` (never dropped early) so a concurrent disk-pressure GC
     // can't collect `test_template`/etc. between phases. See `add_gc_root`.
-    let _gcroots = root_pipeline_inputs(&config)?;
+    let _gcroots = root_pipeline_inputs(&config, &templates)?;
 
     let total_phases = if config.cluster_test.is_none() { 4 } else { 5 };
 
@@ -143,7 +192,7 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
 
     // Run the pipeline phases, capturing the result so Attic cleanup always runs.
     let pipeline_result =
-        run_pipeline_phases(&config, &aws_config, &attic_res, total_phases).await;
+        run_pipeline_phases(&config, &template_paths, &aws_config, &attic_res, total_phases).await;
 
     // ── Attic snapshot + teardown (ALWAYS -- cache grows richer) ─
     if let Some(ref res) = attic_res {
@@ -165,13 +214,14 @@ pub async fn run(args: PipelineRunArgs) -> Result<()> {
 /// of success or failure.
 async fn run_pipeline_phases(
     config: &PipelineConfig,
+    templates: &TemplatePaths,
     aws_config: &aws_config::SdkConfig,
     attic_res: &Option<attic::AtticResources>,
     total_phases: usize,
 ) -> Result<()> {
     let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
-    let build_tpl = config.build_template.to_string_lossy();
-    let test_tpl = config.test_template.to_string_lossy();
+    let build_tpl = templates.build.to_string_lossy();
+    let test_tpl = templates.test.to_string_lossy();
     let manifest_path = config.manifest.to_string_lossy().to_string();
 
     // ── Phase 1: Build AMI ──────────────────────────────────────
@@ -295,9 +345,11 @@ mod gc_root_tests {
         // the original bug (test_template unrooted, build_template's own
         // path implicitly surviving because packer itself was still
         // reading it) actually needed.
-        let config = PipelineConfig {
-            build_template: target.clone(),
-            test_template: target.clone(),
+        let mut config = PipelineConfig {
+            build_template: Some(target.clone()),
+            build_spec: None,
+            test_template: Some(target.clone()),
+            test_spec: None,
             ssm: "/test/ssm/path".into(),
             ami_name: "test-ami".into(),
             region: default_region(),
@@ -307,8 +359,49 @@ mod gc_root_tests {
             make_public: false,
         };
 
-        let gcroots = root_pipeline_inputs(&config).expect("root_pipeline_inputs should succeed");
+        let templates = config.resolve_templates().expect("resolve");
+        let gcroots = root_pipeline_inputs(&config, &templates).expect("root_pipeline_inputs should succeed");
         assert!(gcroots.path().join("build-template").exists());
         assert!(gcroots.path().join("test-template").exists());
+    }
+
+    #[test]
+    fn typed_specs_render_to_files_and_are_never_gc_rooted() {
+        let yaml = r"
+ssm: /x
+ami_name: x
+build_spec:
+  ami_name: x
+  flake_ref: 'github:o/r#x'
+  nix_build_opts: '--option max-jobs 1 --option cores 1'
+  provisioners: [{commands: [[kindling, ami-build]]}]
+test_spec:
+  provisioners: [{commands: [[kindling, ami-test]]}]
+";
+        let mut config: PipelineConfig = serde_yaml::from_str(yaml).expect("config");
+        let templates = config.resolve_templates().expect("resolve");
+        assert!(templates.build.store_path().is_none());
+        assert!(templates.test.store_path().is_none());
+        let paths = materialize_templates(&templates).expect("materialize");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&paths.build).expect("read")).expect("json");
+        assert_eq!(v["build"][0]["provisioner"][0]["shell"]["inline"][0], "kindling ami-build");
+        assert!(paths.test.exists());
+    }
+
+    #[test]
+    fn naming_both_a_template_path_and_a_spec_is_refused() {
+        let yaml = r"
+ssm: /x
+ami_name: x
+build_template: /nix/store/x
+build_spec: {ami_name: x, flake_ref: y, nix_build_opts: z, provisioners: [{commands: [[a]]}]}
+test_template: /nix/store/y
+";
+        let mut config: PipelineConfig = serde_yaml::from_str(yaml).expect("config");
+        assert_eq!(
+            config.resolve_templates().err(),
+            Some(crate::template::TemplateError::BothPathAndSpec { which: "build" })
+        );
     }
 }

@@ -1,0 +1,146 @@
+{
+  "build": [
+    {
+      "post-processor": {
+        "manifest": {
+          "output": "packer-manifest.json",
+          "strip_path": true
+        }
+      },
+      "provisioner": [
+        {
+          "shell": {
+            "environment_vars": [
+              "GITHUB_TOKEN=${var.github_token}",
+              "FLAKE_REF=${var.flake_ref}",
+              "ATTIC_URL=${var.attic_url}",
+              "NIX_BUILD_OPTS=--option max-jobs 8 --option cores 2"
+            ],
+            "expect_disconnect": false,
+            "inline": [
+              "ulimit -s unlimited; ulimit -n \"$(ulimit -Hn)\"; PATH=\"$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths nixpkgs#git)/bin:$PATH\"; ACCESS_TOKENS_OPT=\"\"; [ -n \"$GITHUB_TOKEN\" ] && ACCESS_TOKENS_OPT=\"--option access-tokens github.com=$GITHUB_TOKEN\"; if [ -n \"$ATTIC_URL\" ]; then echo \"Using binary cache (sui): $ATTIC_URL\"; nixos-rebuild boot --flake $FLAKE_REF $ACCESS_TOKENS_OPT --option extra-substituters \"$ATTIC_URL\" --option require-sigs false $NIX_BUILD_OPTS; else nixos-rebuild boot --flake $FLAKE_REF $ACCESS_TOKENS_OPT $NIX_BUILD_OPTS; fi",
+              "echo '[hardening] inlining 3 profile(s) + applying'",
+              "mkdir -p /tmp/kindling-harden",
+              "cat > /tmp/kindling-harden/base.yaml <<'HARDEN_PROFILE_EOF'",
+              "# Substrate base hardening profile.\n#\n# Safe baseline — every AMI that claims to be pleme-io-produced should\n# compose at least this profile. Nothing here is workload-specific.\n#\n# Consumed by `kindling harden --profile base.yaml`. Stack with\n# `hardened.yaml` and `ami-snapshot.yaml` for a full production bake.\n\nname: base\ndescription: |\n  Minimal, non-destructive baseline applied to every pleme-io AMI.\n  Removes docs + locales, applies CIS-aligned sysctl + modprobe\n  drop-ins, hardens sshd.\n\nminimize:\n  - strip-docs\n  - strip-locales\n\nkernel:\n  - sysctl-baseline\n  - blacklist-modules\n\nnetwork:\n  - sshd-strict\n\naudit:\n  - auditd-baseline\n\non_failure: warn\n",
+              "HARDEN_PROFILE_EOF",
+              "mkdir -p /tmp/kindling-harden",
+              "cat > /tmp/kindling-harden/hardened.yaml <<'HARDEN_PROFILE_EOF'",
+              "# Substrate hardened profile.\n#\n# Adds the more aggressive primitives on top of `base.yaml` — tmpfs\n# for sensitive dirs, kernel lockdown, firewall default-deny,\n# moduli regen, build-tool strip. Still safe for any server role.\n# Pair with `ami-snapshot.yaml` for the final-cleanup layer.\n\nname: hardened\ndescription: |\n  Adds firewall, kernel lockdown, tmpfs mounts, default-user removal,\n  and stripped build tooling on top of the base profile.\n\nminimize:\n  - strip-debug\n  - strip-build-tools\n  - minimize-closure\n\nfs:\n  - tmpfs-sensitive-dirs\n  - remount-readonly\n\nkernel:\n  - kernel-lockdown\n\nnetwork:\n  - firewall-deny-all\n  - ssh-moduli-regen\n\naudit:\n  - remove-default-users\n\nparams:\n  firewall_allow_in:\n    - 22\n  keep_locales:\n    - en_US.UTF-8\n    - C\n\non_failure: abort\n",
+              "HARDEN_PROFILE_EOF",
+              "mkdir -p /tmp/kindling-harden",
+              "cat > /tmp/kindling-harden/ami-snapshot.yaml <<'HARDEN_PROFILE_EOF'",
+              "# Substrate AMI-snapshot profile — runs LAST.\n#\n# This is the \"burn everything, we're about to snapshot\" layer. It\n# wipes build history, ssh keys, cloud-init state, and zero-fills free\n# space so the resulting EBS snapshot compresses tight. Never compose\n# this in a long-lived-machine context — only in AMI build pipelines.\n\nname: ami-snapshot\ndescription: |\n  Final-pass scrub for AMIs. Wipes logs, history, cloud-init state,\n  host ssh keys, and zero-fills free space. Must run after every\n  other profile in the stack.\n\nscrub:\n  - scrub-logs\n  - scrub-cloud-init\n  - scrub-shell-history\n  - scrub-ssh-keys\n  - scrub-temp-dirs\n  - zero-fill\n\non_failure: warn\n",
+              "HARDEN_PROFILE_EOF",
+              "HARDEN_TOKEN_OPT=\"\"; [ -n \"$GITHUB_TOKEN\" ] && HARDEN_TOKEN_OPT=\"--option access-tokens github.com=$GITHUB_TOKEN\"; nix --extra-experimental-features 'nix-command flakes' run github:pleme-io/kindling --accept-flake-config $HARDEN_TOKEN_OPT -- harden --profile /tmp/kindling-harden/base.yaml --profile /tmp/kindling-harden/hardened.yaml --profile /tmp/kindling-harden/ami-snapshot.yaml --format text ",
+              "rm -rf /tmp/kindling-harden"
+            ]
+          }
+        }
+      ],
+      "sources": [
+        "source.amazon-ebs.nixos"
+      ]
+    }
+  ],
+  "packer": {
+    "required_plugins": {
+      "amazon": {
+        "source": "github.com/hashicorp/amazon",
+        "version": ">= 1.3.0"
+      }
+    }
+  },
+  "source": {
+    "amazon-ebs": {
+      "nixos": {
+        "ami_name": "${var.ami_name}",
+        "associate_public_ip_address": true,
+        "force_delete_snapshot": true,
+        "force_deregister": true,
+        "instance_type": "${var.instance_type}",
+        "launch_block_device_mappings": [
+          {
+            "delete_on_termination": true,
+            "device_name": "/dev/xvda",
+            "iops": 8000,
+            "throughput": 500,
+            "volume_size": "${var.volume_size}",
+            "volume_type": "gp3"
+          }
+        ],
+        "region": "${var.region}",
+        "run_tags": {
+          "Environment": "dev",
+          "Ephemeral": "true",
+          "ManagedBy": "pangea",
+          "Name": "ami-forge-builder",
+          "Owner": "pleme-io",
+          "Purpose": "ceu akeyless relay AMI",
+          "TtlHours": "4",
+          "ami-forge:purpose": "ami-build",
+          "ami-forge:ttl-hours": "4"
+        },
+        "shutdown_behavior": "terminate",
+        "source_ami_filter": {
+          "filters": {
+            "architecture": "arm64",
+            "name": "nixos/25.*",
+            "root-device-type": "ebs",
+            "virtualization-type": "hvm"
+          },
+          "most_recent": true,
+          "owners": [
+            "427812963091"
+          ]
+        },
+        "ssh_clear_authorized_keys": true,
+        "ssh_timeout": "10m",
+        "ssh_username": "root",
+        "tags": {
+          "BuildTimestamp": "{{timestamp}}",
+          "Environment": "dev",
+          "Ephemeral": "false",
+          "ManagedBy": "pangea",
+          "Name": "${var.ami_name}",
+          "Owner": "pleme-io",
+          "Purpose": "ceu akeyless relay AMI",
+          "SourceFlake": "${var.flake_ref}"
+        },
+        "temporary_key_pair_type": "ed25519",
+        "user_data": "#!/bin/sh\nsystemd-run --on-active=4h --unit=ami-forge-ttl-guard systemctl poweroff\n"
+      }
+    }
+  },
+  "variable": {
+    "ami_name": {
+      "default": "pleme-ceu",
+      "type": "string"
+    },
+    "attic_url": {
+      "default": "",
+      "type": "string"
+    },
+    "flake_ref": {
+      "default": "github:pleme-io/nix#ceu",
+      "type": "string"
+    },
+    "github_token": {
+      "default": "",
+      "sensitive": true,
+      "type": "string"
+    },
+    "instance_type": {
+      "default": "c7g.4xlarge",
+      "type": "string"
+    },
+    "region": {
+      "default": "us-east-2",
+      "type": "string"
+    },
+    "volume_size": {
+      "default": 200,
+      "type": "number"
+    }
+  }
+}
