@@ -20,8 +20,8 @@ pub fn run_packer_init(template: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn run_packer_build(template: &str, vars: &[String]) -> Result<()> {
-    run_packer_build_with_secrets(template, vars, &[])
+pub fn run_packer_build(template: &str, vars: &[String], aws_env: &[(String, String)]) -> Result<()> {
+    run_packer_build_with_secrets(template, vars, &[], aws_env)
 }
 
 /// `packer build` where `secret_vars` are `name=value` pairs that must NEVER
@@ -51,6 +51,7 @@ pub fn run_packer_build_with_secrets(
     template: &str,
     vars: &[String],
     secret_vars: &[(String, String)],
+    aws_env: &[(String, String)],
 ) -> Result<()> {
     // Held for the whole call so the file outlives the child process; dropping
     // it removes the file.
@@ -73,6 +74,10 @@ pub fn run_packer_build_with_secrets(
         cmd.arg("-var-file").arg(f.path());
     }
     cmd.arg(template);
+    if !aws_env.is_empty() {
+        cmd.env_remove("AWS_PROFILE");
+        cmd.envs(aws_env.iter().map(|(k, v)| (k, v)));
+    }
     let status = cmd.status().context("failed to execute packer build")?;
     // Explicit drop before the error path so the secret is gone whether the
     // build succeeded or not.

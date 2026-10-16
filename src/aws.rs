@@ -19,6 +19,24 @@ pub async fn load_config(region: &str) -> SdkConfig {
         .await
 }
 
+pub async fn packer_env(config: &SdkConfig) -> anyhow::Result<Vec<(String, String)>> {
+    use aws_credential_types::provider::ProvideCredentials as _;
+    let creds = config
+        .credentials_provider()
+        .context("no AWS credentials provider configured")?
+        .provide_credentials()
+        .await
+        .context("resolving AWS credentials for packer")?;
+    let mut env = vec![
+        ("AWS_ACCESS_KEY_ID".to_owned(), creds.access_key_id().to_owned()),
+        ("AWS_SECRET_ACCESS_KEY".to_owned(), creds.secret_access_key().to_owned()),
+    ];
+    if let Some(token) = creds.session_token() {
+        env.push(("AWS_SESSION_TOKEN".to_owned(), token.to_owned()));
+    }
+    Ok(env)
+}
+
 /// Load AWS SDK config with an explicit SSO profile.
 ///
 /// Uses the named profile for credential resolution — no env vars needed.

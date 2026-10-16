@@ -231,7 +231,12 @@ async fn run_layers(
         // Clean old manifest
         let _ = std::fs::remove_file(&manifest);
 
-        run_packer_build_with_secrets(&tpl, &vars, &layer_secrets)?;
+        run_packer_build_with_secrets(
+            &tpl,
+            &vars,
+            &layer_secrets,
+            &crate::aws::packer_env(&crate::aws::load_config(&config.region).await).await?,
+        )?;
 
         // Extract AMI ID
         let ami_id = crate::aws::parse_packer_manifest(&manifest)
@@ -289,7 +294,11 @@ async fn run_layers(
         info!("[{step}/{total}] Test '{}' on {final_ami}", test.name);
         let tpl = test.template.to_string_lossy();
         run_packer_init(&tpl)?;
-        let test_result = run_packer_build(&tpl, &[format!("source_ami={final_ami}")]);
+        let test_result = run_packer_build(
+            &tpl,
+            &[format!("source_ami={final_ami}")],
+            &crate::aws::packer_env(&crate::aws::load_config(&config.region).await).await?,
+        );
         if let Err(e) = test_result {
             error!("Test '{}' FAILED: {e:#}", test.name);
             // Deregister the release AMI

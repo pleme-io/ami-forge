@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "dc5c30bd45499595eaadb08441fadd5092c8ae1a7b82c35813b83501ecb90328",
+  "cargo_lock_sha256": "336697b5b32d9c533daa88a795a62149808bd71bce8b3f0e935580f8ced15a96",
   "manifest_sha256": {
-    "Cargo.toml": "a17de6c868e9709eb10f64db930774eae6424b3f7279c165671c596714518105"
+    "Cargo.toml": "1c549ed025e7dabdb821a1e79637d00f4cea148572045144726ed1a63e2c3f03"
   },
   "target_resolves": {
     "base": {
@@ -44,6 +44,16 @@
               "sso"
             ],
             "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_credential_types",
+            "package_key": "aws-credential-types-1.2.11",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
             "optional": false,
             "target": null,
             "tree": "target"

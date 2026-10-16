@@ -43,6 +43,6 @@ pub fn run(args: TestAmiArgs) -> Result<()> {
     let template = args.template.to_string_lossy();
     info!("Testing AMI: {} (region {})", args.source_ami, args.region);
     run_packer_init(&template)?;
-    run_packer_build(&template, &[format!("source_ami={}", args.source_ami)])?;
+    run_packer_build(&template, &[format!("source_ami={}", args.source_ami)], &[])?;
     Ok(())
 }

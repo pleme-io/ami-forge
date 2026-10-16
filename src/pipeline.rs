@@ -246,7 +246,12 @@ async fn run_pipeline_phases(
         ));
         info!("[attic] Passing substituter URL to Packer build (private IP)");
     }
-    run_packer_build_with_secrets(&build_tpl, &build_vars, &build_secrets)?;
+    run_packer_build_with_secrets(
+        &build_tpl,
+        &build_vars,
+        &build_secrets,
+        &crate::aws::packer_env(aws_config).await?,
+    )?;
 
     // ── Phase 2: Extract AMI ID ─────────────────────────────────
     info!("[2/{total_phases}] Extracting AMI ID from manifest");
@@ -256,7 +261,11 @@ async fn run_pipeline_phases(
     // ── Phase 3: Single-node smoke test (Packer) ────────────────
     info!("[3/{total_phases}] Running single-node integration test on {ami_id}");
     run_packer_init(&test_tpl)?;
-    let test_result = run_packer_build(&test_tpl, &[format!("source_ami={ami_id}")]);
+    let test_result = run_packer_build(
+        &test_tpl,
+        &[format!("source_ami={ami_id}")],
+        &crate::aws::packer_env(aws_config).await?,
+    );
 
     if let Err(e) = test_result {
         error!("Single-node test FAILED: {e:#}");

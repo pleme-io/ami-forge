@@ -23,6 +23,7 @@ version = "0.2.4"
 dependencies = [
  "anyhow",
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-codebuild",
  "aws-sdk-ec2",
  "aws-sdk-iam",
