@@ -142,7 +142,7 @@ fn default_manifest() -> PathBuf {
 pub async fn run(args: PipelineRunArgs) -> Result<()> {
     let config_content = std::fs::read_to_string(&args.config)
         .with_context(|| format!("failed to read pipeline config: {}", args.config.display()))?;
-    let mut config: PipelineConfig = serde_yaml::from_str(&config_content)
+    let mut config: PipelineConfig = serde_norway::from_str(&config_content)
         .context("failed to parse pipeline config YAML")?;
     let templates = config.resolve_templates()?;
     let template_paths = materialize_templates(&templates)?;
@@ -387,7 +387,7 @@ build_spec:
 test_spec:
   provisioners: [{commands: [[kindling, ami-test]]}]
 ";
-        let mut config: PipelineConfig = serde_yaml::from_str(yaml).expect("config");
+        let mut config: PipelineConfig = serde_norway::from_str(yaml).expect("config");
         let templates = config.resolve_templates().expect("resolve");
         assert!(templates.build.store_path().is_none());
         assert!(templates.test.store_path().is_none());
@@ -407,7 +407,7 @@ build_template: /nix/store/x
 build_spec: {ami_name: x, flake_ref: y, nix_build_opts: z, provisioners: [{commands: [[a]]}]}
 test_template: /nix/store/y
 ";
-        let mut config: PipelineConfig = serde_yaml::from_str(yaml).expect("config");
+        let mut config: PipelineConfig = serde_norway::from_str(yaml).expect("config");
         assert_eq!(
             config.resolve_templates().err(),
             Some(crate::template::TemplateError::BothPathAndSpec { which: "build" })

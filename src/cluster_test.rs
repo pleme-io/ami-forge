@@ -450,7 +450,7 @@ impl TestResources {
 pub async fn run(args: ClusterTestArgs) -> Result<()> {
     let config_content = std::fs::read_to_string(&args.config)
         .with_context(|| format!("failed to read cluster test config: {}", args.config.display()))?;
-    let config: ClusterTestConfig = serde_yaml::from_str(&config_content)
+    let config: ClusterTestConfig = serde_norway::from_str(&config_content)
         .context("failed to parse cluster test config YAML")?;
 
     if config.nodes.is_empty() {

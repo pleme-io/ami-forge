@@ -849,7 +849,7 @@ provisioners:
 
     #[test]
     fn build_spec_matches_substrate_template_except_provisioner() {
-        let spec: BuildSpec = serde_yaml::from_str(CEU_BUILD_SPEC).expect("spec");
+        let spec: BuildSpec = serde_norway::from_str(CEU_BUILD_SPEC).expect("spec");
         let rendered = spec.render().expect("render");
         let golden = fixture("ceu-build-template.pkr.json");
         assert_eq!(
@@ -868,7 +868,7 @@ provisioners:
 
     #[test]
     fn test_spec_matches_substrate_template_except_provisioner() {
-        let spec: TestSpec = serde_yaml::from_str(CEU_TEST_SPEC).expect("spec");
+        let spec: TestSpec = serde_norway::from_str(CEU_TEST_SPEC).expect("spec");
         let rendered = spec.render().expect("render");
         assert_eq!(
             without_provisioner(rendered),
@@ -889,14 +889,14 @@ provisioners:
 
     #[test]
     fn empty_argv_and_bad_env_names_are_refused_at_parse() {
-        assert!(serde_yaml::from_str::<Provisioner>("commands: [[]]").is_err());
-        assert!(serde_yaml::from_str::<Provisioner>("commands: [[a, {env: 'A B'}]]").is_err());
-        assert!(serde_yaml::from_str::<Provisioner>("commands: [[a]]\nshell: x").is_err());
+        assert!(serde_norway::from_str::<Provisioner>("commands: [[]]").is_err());
+        assert!(serde_norway::from_str::<Provisioner>("commands: [[a, {env: 'A B'}]]").is_err());
+        assert!(serde_norway::from_str::<Provisioner>("commands: [[a]]\nshell: x").is_err());
     }
 
     #[test]
     fn undeclared_variable_reference_is_refused() {
-        let spec: TestSpec = serde_yaml::from_str(
+        let spec: TestSpec = serde_norway::from_str(
             "provisioners: [{commands: [[a]], environment_vars: [{name: T, var: github_token}]}]",
         )
         .expect("spec");
@@ -908,7 +908,7 @@ provisioners:
 
     #[test]
     fn packer_interpolation_in_literals_is_inert() {
-        let p: Provisioner = serde_yaml::from_str(
+        let p: Provisioner = serde_norway::from_str(
             r"
 commands: [[sh, -c, 'echo ${GITHUB_TOKEN:+x} %{if}'], [echo, '{{timestamp}}']]
 environment_vars: [{name: X, value: '${y}'}]
@@ -928,7 +928,7 @@ execute_command: [sudo, -E, {placeholder: vars}, sh, {placeholder: path}]
             json!("sudo -E {{.Vars}} sh {{.Path}}")
         );
         let go: Provisioner =
-            serde_yaml::from_str("commands: [[a]]\nenvironment_vars: [{name: X, value: '{{x}}'}]")
+            serde_norway::from_str("commands: [[a]]\nenvironment_vars: [{name: X, value: '{{x}}'}]")
                 .expect("p");
         assert!(matches!(
             go.render(&[], &[], "test"),
@@ -994,7 +994,7 @@ execute_command: [sudo, -E, {placeholder: vars}, sh, {placeholder: path}]
             );
             return;
         };
-        let mut build: BuildSpec = serde_yaml::from_str(CEU_BUILD_SPEC).expect("spec");
+        let mut build: BuildSpec = serde_norway::from_str(CEU_BUILD_SPEC).expect("spec");
         let mut rng = rand::rngs::StdRng::seed_from_u64(7);
         let nasty: Vec<Arg> = (0..40)
             .map(|_| Arg::Literal(nasty_string(&mut rng)))
@@ -1014,7 +1014,7 @@ execute_command: [sudo, -E, {placeholder: vars}, sh, {placeholder: path}]
                 "echo ${GITHUB_TOKEN:+--option access-tokens github.com=$GITHUB_TOKEN}".into(),
             ),
         ]));
-        let test: TestSpec = serde_yaml::from_str(CEU_TEST_SPEC).expect("spec");
+        let test: TestSpec = serde_norway::from_str(CEU_TEST_SPEC).expect("spec");
         let dir = tempfile::tempdir().expect("tmp");
         for (name, v) in [
             ("build.pkr.json", build.render().expect("render")),
@@ -1183,7 +1183,7 @@ provisioners:
 
     #[test]
     fn env_parts_and_arg_parts_render() {
-        let spec: BuildSpec = serde_yaml::from_str(CEU_KINDLING_SPEC).expect("spec");
+        let spec: BuildSpec = serde_norway::from_str(CEU_KINDLING_SPEC).expect("spec");
         let v = spec.render().expect("render");
         let steps = &v["build"][0]["provisioner"];
         assert_eq!(
@@ -1199,7 +1199,7 @@ provisioners:
                 "NIX_CONFIG=extra-experimental-features = nix-command flakes\naccess-tokens = github.com=${var.github_token}"
             )
         );
-        let p: Provisioner = serde_yaml::from_str(
+        let p: Provisioner = serde_norway::from_str(
             "commands: [[echo, {parts: ['a=${x} ', {env: HOME}, \"'q'\"]}, {parts: []}]]",
         )
         .expect("p");
@@ -1213,7 +1213,7 @@ provisioners:
             sh_argv(line.trim_start_matches("echo ")),
             vec![format!("a=${{x}} {home}'q'"), String::new()]
         );
-        let undeclared: Provisioner = serde_yaml::from_str(
+        let undeclared: Provisioner = serde_norway::from_str(
             "commands: [[a]]\nenvironment_vars: [{name: X, parts: [a, {var: nope}]}]",
         )
         .expect("p");
@@ -1292,8 +1292,8 @@ provisioners:
             return;
         };
         let dir = tempfile::tempdir().expect("tmp");
-        let build: BuildSpec = serde_yaml::from_str(CEU_KINDLING_SPEC).expect("spec");
-        let test: TestSpec = serde_yaml::from_str(CEU_TEST_SPEC).expect("spec");
+        let build: BuildSpec = serde_norway::from_str(CEU_KINDLING_SPEC).expect("spec");
+        let test: TestSpec = serde_norway::from_str(CEU_TEST_SPEC).expect("spec");
         for (name, v) in [
             ("build.pkr.json", build.render().expect("render")),
             ("test.pkr.json", test.render().expect("render")),

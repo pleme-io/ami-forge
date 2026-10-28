@@ -74,7 +74,7 @@ fn root_multi_layer_inputs(config: &MultiLayerConfig) -> Result<tempfile::TempDi
 pub async fn run(args: MultiLayerRunArgs) -> Result<()> {
     let config_content = std::fs::read_to_string(&args.config)
         .with_context(|| format!("failed to read config: {}", args.config.display()))?;
-    let config: MultiLayerConfig = serde_yaml::from_str(&config_content)
+    let config: MultiLayerConfig = serde_norway::from_str(&config_content)
         .context("failed to parse multi-layer config")?;
 
     // Validate
