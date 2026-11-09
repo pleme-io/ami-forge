@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "6d5d7cac28bb5cb2bfc5f9e2af5d52ed9d443747888def684678f4334c7bf381",
+  "cargo_lock_sha256": "850965fc15e698830fc8de08763e8b2ee2340e2ad1a99d68b4ffe4b02aa0212b",
   "manifest_sha256": {
-    "Cargo.toml": "ab21861ce5bc882af719265478044fe4a306a913d90876656299b15638762144"
+    "Cargo.toml": "97f3ba250ba7281bc937c163bd52eebe9662a46d30d99b73f640c2f0009f83aa"
   },
   "target_resolves": {
     "base": {
@@ -20,7 +20,7 @@
           "alloc"
         ]
       },
-      "ami-forge-0.2.6": {
+      "ami-forge-0.2.7": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -736,11 +736,11 @@
           "test-util"
         ]
       },
-      "aws-lc-rs-1.18.2": {
+      "aws-lc-rs-1.19.0": {
         "runtime_dependencies": [
           {
             "name": "aws_lc_sys",
-            "package_key": "aws-lc-sys-0.46.0",
+            "package_key": "aws-lc-sys-0.47.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -765,12 +765,12 @@
           "prebuilt-nasm"
         ]
       },
-      "aws-lc-sys-0.46.0": {
+      "aws-lc-sys-0.47.0": {
         "runtime_dependencies": [],
         "build_dependencies": [
           {
             "name": "cc",
-            "package_key": "cc-1.10.0",
+            "package_key": "cc-1.11.1",
             "kind": "build",
             "features": [
               "parallel"
@@ -1018,7 +1018,7 @@
           },
           {
             "name": "uuid",
-            "package_key": "uuid-1.29.0",
+            "package_key": "uuid-1.29.2",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2951,7 +2951,7 @@
           },
           {
             "name": "crc32fast",
-            "package_key": "crc32fast-1.5.3",
+            "package_key": "crc32fast-1.5.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3823,7 +3823,7 @@
           },
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4116,7 +4116,7 @@
           "std"
         ]
       },
-      "cc-1.10.0": {
+      "cc-1.11.1": {
         "runtime_dependencies": [
           {
             "name": "find_msvc_tools",
@@ -4337,7 +4337,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "full"
@@ -4362,7 +4362,7 @@
         "runtime_dependencies": [
           {
             "name": "cc",
-            "package_key": "cc-1.10.0",
+            "package_key": "cc-1.11.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4529,7 +4529,7 @@
           "std"
         ]
       },
-      "crc32fast-1.5.3": {
+      "crc32fast-1.5.4": {
         "runtime_dependencies": [
           {
             "name": "cfg_if",
@@ -4653,7 +4653,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5490,7 +5490,7 @@
           },
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5516,7 +5516,7 @@
           },
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5758,7 +5758,7 @@
           },
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5930,7 +5930,7 @@
           },
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5950,7 +5950,7 @@
           },
           {
             "name": "smallvec",
-            "package_key": "smallvec-1.16.4",
+            "package_key": "smallvec-1.16.5",
             "kind": "normal",
             "features": [
               "const_generics",
@@ -6028,7 +6028,7 @@
           },
           {
             "name": "log",
-            "package_key": "log-0.4.34",
+            "package_key": "log-0.4.35",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6390,7 +6390,7 @@
           },
           {
             "name": "utf8_iter",
-            "package_key": "utf8_iter-1.0.4",
+            "package_key": "utf8_iter-1.1.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -6531,7 +6531,7 @@
           },
           {
             "name": "smallvec",
-            "package_key": "smallvec-1.16.4",
+            "package_key": "smallvec-1.16.5",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -6749,7 +6749,7 @@
           },
           {
             "name": "smallvec",
-            "package_key": "smallvec-1.16.4",
+            "package_key": "smallvec-1.16.5",
             "kind": "normal",
             "features": [
               "const_generics"
@@ -6761,7 +6761,7 @@
           },
           {
             "name": "utf8_iter",
-            "package_key": "utf8_iter-1.0.4",
+            "package_key": "utf8_iter-1.1.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6900,7 +6900,7 @@
           "default"
         ]
       },
-      "itoa-1.0.18": {
+      "itoa-1.0.19": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -6958,7 +6958,7 @@
           "default"
         ]
       },
-      "log-0.4.34": {
+      "log-0.4.35": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": [
@@ -7195,7 +7195,7 @@
           },
           {
             "name": "smallvec",
-            "package_key": "smallvec-1.16.4",
+            "package_key": "smallvec-1.16.5",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7939,7 +7939,7 @@
           },
           {
             "name": "log",
-            "package_key": "log-0.4.34",
+            "package_key": "log-0.4.35",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8144,7 +8144,7 @@
         "runtime_dependencies": [
           {
             "name": "log",
-            "package_key": "log-0.4.34",
+            "package_key": "log-0.4.35",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8198,7 +8198,7 @@
         "runtime_dependencies": [
           {
             "name": "aws_lc_rs",
-            "package_key": "aws-lc-rs-1.18.2",
+            "package_key": "aws-lc-rs-1.19.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -8340,7 +8340,7 @@
         "runtime_dependencies": [
           {
             "name": "aws_lc_rs",
-            "package_key": "aws-lc-rs-1.18.2",
+            "package_key": "aws-lc-rs-1.19.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -8507,7 +8507,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -8531,7 +8531,7 @@
         "runtime_dependencies": [
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8590,7 +8590,7 @@
           },
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8646,7 +8646,7 @@
           },
           {
             "name": "itoa",
-            "package_key": "itoa-1.0.18",
+            "package_key": "itoa-1.0.19",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -8814,7 +8814,7 @@
           "std"
         ]
       },
-      "smallvec-1.16.4": {
+      "smallvec-1.16.5": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": [
@@ -8930,7 +8930,7 @@
           "visit-mut"
         ]
       },
-      "syn-3.0.9": {
+      "syn-3.0.10": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -9021,7 +9021,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "clone-impls",
@@ -9139,7 +9139,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -9454,7 +9454,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "full"
@@ -9917,7 +9917,7 @@
         "runtime_dependencies": [
           {
             "name": "log",
-            "package_key": "log-0.4.34",
+            "package_key": "log-0.4.35",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10008,7 +10008,7 @@
           },
           {
             "name": "smallvec",
-            "package_key": "smallvec-1.16.4",
+            "package_key": "smallvec-1.16.5",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10163,8 +10163,19 @@
         "build_dependencies": [],
         "features": []
       },
-      "utf8_iter-1.0.4": {
-        "runtime_dependencies": [],
+      "utf8_iter-1.1.0": {
+        "runtime_dependencies": [
+          {
+            "name": "utf_types",
+            "package_key": "utf_types-1.0.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
         "build_dependencies": [],
         "features": []
       },
@@ -10175,7 +10186,12 @@
           "default"
         ]
       },
-      "uuid-1.29.0": {
+      "utf_types-1.0.0": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "uuid-1.29.2": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": [
@@ -10349,7 +10365,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "fold",
@@ -10423,7 +10439,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "fold",
@@ -10612,7 +10628,7 @@
           },
           {
             "name": "syn",
-            "package_key": "syn-3.0.9",
+            "package_key": "syn-3.0.10",
             "kind": "normal",
             "features": [
               "extra-traits"
@@ -10871,7 +10887,7 @@
             "build_dependencies": [
               {
                 "name": "cc",
-                "package_key": "cc-1.10.0",
+                "package_key": "cc-1.11.1",
                 "kind": "build",
                 "features": [],
                 "uses_default_features": false,
@@ -11282,7 +11298,7 @@
             "build_dependencies": [
               {
                 "name": "cc",
-                "package_key": "cc-1.10.0",
+                "package_key": "cc-1.11.1",
                 "kind": "build",
                 "features": [],
                 "uses_default_features": false,
@@ -11637,7 +11653,7 @@
             "build_dependencies": [
               {
                 "name": "cc",
-                "package_key": "cc-1.10.0",
+                "package_key": "cc-1.11.1",
                 "kind": "build",
                 "features": [],
                 "uses_default_features": false,
@@ -12035,7 +12051,7 @@
             "build_dependencies": [
               {
                 "name": "cc",
-                "package_key": "cc-1.10.0",
+                "package_key": "cc-1.11.1",
                 "kind": "build",
                 "features": [],
                 "uses_default_features": false,
@@ -12458,7 +12474,7 @@
             "build_dependencies": [
               {
                 "name": "cc",
-                "package_key": "cc-1.10.0",
+                "package_key": "cc-1.11.1",
                 "kind": "build",
                 "features": [],
                 "uses_default_features": false,
@@ -12825,7 +12841,7 @@
             "build_dependencies": [
               {
                 "name": "cc",
-                "package_key": "cc-1.10.0",
+                "package_key": "cc-1.11.1",
                 "kind": "build",
                 "features": [],
                 "uses_default_features": false,
@@ -12982,7 +12998,7 @@
     "allocator-api2-0.2.21": {
       "edition": "2018"
     },
-    "ami-forge-0.2.6": {
+    "ami-forge-0.2.7": {
       "edition": "2024",
       "lib_target": {
         "name": "ami_forge",
@@ -13023,15 +13039,15 @@
     "aws-credential-types-1.2.11": {
       "edition": "2021"
     },
-    "aws-lc-rs-1.18.2": {
+    "aws-lc-rs-1.19.0": {
       "edition": "2021",
       "build_script": "build.rs",
-      "links": "aws_lc_rs_1_18_2_sys"
+      "links": "aws_lc_rs_1_19_0_sys"
     },
-    "aws-lc-sys-0.46.0": {
+    "aws-lc-sys-0.47.0": {
       "edition": "2021",
       "build_script": "builder/main.rs",
-      "links": "aws_lc_0_46_0"
+      "links": "aws_lc_0_47_0"
     },
     "aws-runtime-1.6.0": {
       "edition": "2021"
@@ -13127,7 +13143,7 @@
     "bytesize-2.7.0": {
       "edition": "2021"
     },
-    "cc-1.10.0": {
+    "cc-1.11.1": {
       "edition": "2021"
     },
     "cfg-if-1.0.5": {
@@ -13205,7 +13221,7 @@
         }
       ]
     },
-    "crc32fast-1.5.3": {
+    "crc32fast-1.5.4": {
       "edition": "2021",
       "build_script": "build.rs"
     },
@@ -13396,7 +13412,7 @@
     "is_terminal_polyfill-1.70.2": {
       "edition": "2021"
     },
-    "itoa-1.0.18": {
+    "itoa-1.0.19": {
       "edition": "2021"
     },
     "jobserver-0.1.35": {
@@ -13418,7 +13434,7 @@
     "lock_api-0.4.14": {
       "edition": "2021"
     },
-    "log-0.4.34": {
+    "log-0.4.35": {
       "edition": "2021"
     },
     "lru-0.16.4": {
@@ -13658,7 +13674,7 @@
     "slab-0.4.12": {
       "edition": "2018"
     },
-    "smallvec-1.16.4": {
+    "smallvec-1.16.5": {
       "edition": "2018"
     },
     "socket2-0.5.10": {
@@ -13682,7 +13698,7 @@
     "syn-2.0.119": {
       "edition": "2021"
     },
-    "syn-3.0.9": {
+    "syn-3.0.10": {
       "edition": "2021"
     },
     "sync_wrapper-1.0.2": {
@@ -13799,13 +13815,16 @@
     "urlencoding-2.1.3": {
       "edition": "2021"
     },
-    "utf8_iter-1.0.4": {
+    "utf8_iter-1.1.0": {
       "edition": "2021"
     },
     "utf8parse-0.2.2": {
       "edition": "2018"
     },
-    "uuid-1.29.0": {
+    "utf_types-1.0.0": {
+      "edition": "2021"
+    },
+    "uuid-1.29.2": {
       "edition": "2021"
     },
     "version_check-0.9.5": {
