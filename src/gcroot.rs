@@ -15,8 +15,7 @@
 //! on the *evaluating* machine, not the remote AMI builder) can collect a
 //! template path between phases — surfacing as `packer init failed: stat
 //! ... no such file or directory`, long after the real cause (an unrelated
-//! GC sweep) already happened. Root-caused live 2026-07-16; full analysis
-//! in `pleme-io/theory/AMI-FORGE.md`.
+//! GC sweep) already happened. Root-caused live 2026-07-16.
 //!
 //! `root_paths` closes this structurally: every path given gets an
 //! explicit, persistent `nix-store --add-root` for the returned
